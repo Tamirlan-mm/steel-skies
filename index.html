@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Steel Skies — Ground Assault</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="hud" class="hidden">
+      <!-- heading tape: stays above the ticket bars so the top strip reads
+           compass first, score second, exactly like a gunner's sight block -->
+      <div id="compassWrap" class="hidden">
+        <canvas id="compass" width="1120" height="72"></canvas>
+      </div>
+      <div id="topBar">
+        <div class="ticketWrap">
+          <div id="ticketsA" class="ticketFill allies"></div>
+          <span id="ticketsAText">700</span>
+        </div>
+        <div id="matchCentre">
+          <div id="matchTop" class="hidden">
+            <span id="matchMode"></span>
+            <span id="matchTimer">--:--</span>
+          </div>
+          <div id="capStatus">—</div>
+          <div id="matchObjective" class="hidden"></div>
+        </div>
+        <div class="ticketWrap">
+          <div id="ticketsB" class="ticketFill enemies"></div>
+          <span id="ticketsBText">700</span>
+        </div>
+      </div>
+      <div id="markers"></div>
+      <div id="crosshair"></div>
+      <!-- H-02/H-05: the penetration chevron, shot perspective, with its glyph
+           and word; the crosshair ring itself is never recoloured -->
+      <div id="penMark" class="penMark hidden"><i class="penChev"><svg viewBox="0 0 14 10" width="14" height="10" aria-hidden="true"><path d="M1 9.2 L7 1 L13 9.2 L7 6.4 Z"/></svg></i><b class="penGlyph"></b><span class="penWord"></span></div>
+      <!-- the arcs live in their own centred square so a single CSS rotate
+           puts each one at the bearing the hit came from -->
+      <div id="damageArcs"></div>
+      <!-- the gunner's optic: field stop and mil reticle on one canvas (H-02),
+           the real optic's label (K-04), rangefinder, legend (H-05) -->
+      <div id="scope" class="hidden">
+        <canvas id="scopeCanvas"></canvas>
+        <div id="scopeDot" class="penMark hidden"><i class="penChev"><svg viewBox="0 0 14 10" width="14" height="10" aria-hidden="true"><path d="M1 9.2 L7 1 L13 9.2 L7 6.4 Z"/></svg></i><b class="penGlyph"></b><span class="penWord"></span></div>
+        <div id="scopeInfo">—</div>
+        <div id="scopeRange">DIST —</div>
+        <div id="scopePen" class="hidden"><b class="penGlyph"></b><span class="penWord"></span></div>
+        <div id="scopeLegend"></div>
+      </div>
+      <div id="gunMarker"></div>
+      <div id="mouseAim"></div>
+      <div id="rewardPops"></div>
+      <div id="hitmsg"></div>
+      <div id="incomingMsg"></div>
+      <div id="awardBanner" class="hidden">
+        <div class="awTitle"></div>
+        <div class="awSub"></div>
+      </div>
+      <div id="deathInfo" class="hidden"></div>
+      <div id="killCamFrame" class="hidden"><span id="killCamTitle">HIT CAMERA · YOUR SHOT</span><canvas id="xrayCanvas"></canvas></div>
+      <div id="reloadWrap"><div id="reloadBar"></div></div>
+      <div id="shellLabel">AP ×45</div>
+      <div id="speedo">0 km/h</div>
+      <div id="statusPanel"></div>
+      <div id="damagePanel" class="hidden"></div>
+      <div id="ammoPanel" class="hidden"></div>
+      <div id="airPanel" class="hidden"></div>
+      <div id="scoreboard" class="hidden"></div>
+      <canvas id="minimap" width="190" height="190"></canvas>
+      <div id="killfeed"></div>
+      <div id="damageLog"></div>
+      <div id="helpPanel">
+        <b>CONTROLS</b>
+        <span>W / S — throttle · A / D — steer</span>
+        <span>Mouse — aim · LMB — fire</span>
+        <span>Shift — sniper view · Scroll — camera zoom</span>
+        <span>1 — AP shell · 2 — HE shell</span>
+        <span>Esc — pause</span>
+      </div>
+      <!-- G-LOC vignette: an SVG radial, so the stylesheet keeps no gradient (H-12) -->
+      <div id="blackout"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><defs><radialGradient id="boBlackG" cx="50%" cy="50%" r="71%"><stop offset="0.08" stop-color="#000" stop-opacity="0"/><stop offset="0.4" stop-color="#000" stop-opacity="0.55"/><stop offset="0.74" stop-color="#000" stop-opacity="0.95"/><stop offset="1" stop-color="#000"/></radialGradient><radialGradient id="boRedG" cx="50%" cy="50%" r="71%"><stop offset="0.06" stop-color="#960a0a" stop-opacity="0"/><stop offset="0.38" stop-color="#a01010" stop-opacity="0.5"/><stop offset="0.74" stop-color="#be1818" stop-opacity="0.9"/><stop offset="1" stop-color="#b41818"/></radialGradient></defs><rect class="boBlack" width="100" height="100" fill="url(#boBlackG)"/><rect class="boRed" width="100" height="100" fill="url(#boRedG)"/></svg></div>
+      <div id="bigMap" class="hidden">
+        <div class="bmFrame">
+          <div class="bmHead"><span id="bigMapTitle">TACTICAL MAP</span><span class="bmHint">M — close</span></div>
+          <canvas id="bigMapCanvas" width="660" height="660"></canvas>
+          <div class="bmLegend">
+            <span><i class="lg ally"></i>Allies</span>
+            <span><i class="lg enemy"></i>Enemies</span>
+            <span><i class="lg you"></i>You</span>
+            <span><i class="lg zone"></i>Capture zone</span>
+            <span><i class="lg spawn"></i>Spawn</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="garage" class="hidden"></div>
+    <div id="overlay" class="hidden"></div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
