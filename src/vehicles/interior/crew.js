@@ -414,12 +414,13 @@ export class CrewFigures {
       TL.copy(E).addScaledVector(F, 0.42).addScaledVector(R, -0.07);
       TL.y -= 0.24 - n;
     } else {
-      // the commander: a hand on the ring and one at his knee
+      // the commander: a hand up on the cupola ring, the other down at his side
+      // (he stands with his head in the cupola, so his knee is far below)
       const n = Math.sin(this.time * 0.5 + fig.phase) * 0.012;
       TR.copy(E).addScaledVector(F, 0.16).addScaledVector(R, 0.2);
       TR.y -= 0.14 + n;
-      TL.copy(E).addScaledVector(F, 0.2).addScaledVector(R, -0.2);
-      TL.y -= 0.42 + n;
+      TL.copy(E).addScaledVector(F, 0.1).addScaledVector(R, -0.27);
+      TL.y -= 0.74 + n;
     }
     this._arm(fig, P.uL, P.fL, P.hL, SL, TL, -1, F, R);
     this._arm(fig, P.uR, P.fR, P.hR, SR, TR, 1, F, R);

@@ -873,6 +873,8 @@ function lineupIds(b) {
       if (id && !b.lineup.includes(id)) b.lineup.push(id);
     }
   }
+  // simulator: only your own side's vehicles come back (planBattle: nations)
+  if (b?.nations) return ids.filter((id) => id === playerSpecId || b.nations.includes(SPEC_INDEX[id]?.nation));
   return ids;
 }
 

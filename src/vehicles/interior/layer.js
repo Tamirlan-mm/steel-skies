@@ -215,7 +215,16 @@ export class InteriorLayer {
     if (L.turret && this.frames.turret) {
       const T = L.turret;
       const tb = B.turret;
-      tb.insideTurret(0, T.cz, T.rx, T.rz, T.y0, T.y1, col.wall, col.wall);
+      // the cupola stands over a round opening in the roof, with the commander's
+      // head and shoulders up in it (only if its axis is inside the turret)
+      const cupH = (L.hatches || []).find((h) => h.cupola && h.frame === 'turret');
+      let well = null;
+      if (cupH && (cupH.pos[0] / T.rx) ** 2 + ((cupH.pos[2] - T.cz) / T.rz) ** 2 < 0.9) {
+        const cst = def.stations.commander;
+        const dv = cst && cst.device && cst.device.type === 'blocks' ? cst.device : null;
+        well = { x: cupH.pos[0], z: cupH.pos[2], r: dv ? dv.radius + 0.012 : cupH.cupola.r * 0.95 };
+      }
+      tb.insideTurret(0, T.cz, T.rx, T.rz, T.y0, T.y1, col.wall, col.wall, 18, well);
       // the race ring and the basket floor
       tb.cyl(0, T.y0 + 0.02, 0, T.ringR + 0.04, 0.06, col.metal, { seg: 20, caps: false, inside: true });
       tb.cyl(0, T.basketY + 0.02, 0, T.ringR, 0.025, col.floor, { seg: 20 });
@@ -263,7 +272,9 @@ export class InteriorLayer {
         // bright blocks (wave 8: in the ivory wall paint, 0.6 m from the
         // dome light, it was one flat light-grey slab round the window)
         const ring = col.metal.map((v) => v * 1.5);
-        b.cyl(h.pos[0], (cu.y0 + y1) / 2, h.pos[2], rWall, y1 - cu.y0, ring, { seg: 16, caps: false, inside: true });
+        // down to the roof, so no gap is left round the well
+        const y0 = h.frame === 'turret' && L.turret ? Math.min(cu.y0, L.turret.y1) : cu.y0;
+        b.cyl(h.pos[0], (y0 + y1) / 2, h.pos[2], rWall, y1 - y0, ring, { seg: 16, caps: false, inside: true });
         if (dv) this._blockGlass(gOf(h.frame), st, dv, 0.006);
       }
     }

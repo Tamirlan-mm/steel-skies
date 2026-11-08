@@ -39,7 +39,7 @@ import { opticSteps } from '../ui/hud.js';
 import { clamp, lerp, rand, wrapAngle } from '../core/utils.js';
 import { stationsFor } from '../vehicles/interior/index.js';
 import { gunSightOrigin } from '../vehicles/interior/sight.js';
-import { isRealisticRules, isSimulator, SIM_HUD } from './simRules.js';
+import { isRealisticRules, isSimulator, SIM_HUD, frontText } from './simRules.js';
 
 const TICKETS_MAX = 2100;
 const KILL_COST = 70;
@@ -375,6 +375,7 @@ export class Battle {
       listenerPos: this.camera.position,
       onFlyby: flyby,
       player: this.player,
+      friendlyFire: this.simulator,
     };
 
     // the rich HUD carries its own reload bar inside the ammo stack; the old
@@ -388,6 +389,7 @@ export class Battle {
     hud.setSimulator?.(this.simulator);
     this.refreshHelp();
     this.afterSpawns();
+    if (plan.front) hud.incomingMessage?.(frontText(plan.front), 'info', true);
   }
 
   // ---- mode hooks (game/convoy.js overrides them) ----

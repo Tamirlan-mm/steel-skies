@@ -453,7 +453,8 @@ export class GeoBuilder {
 
   // An elliptic cylinder room around the y axis (a turret seen from inside):
   // walls from y0 to y1, radii rx / rz, centre (cx, cz), plus its roof.
-  insideTurret(cx, cz, rx, rz, y0, y1, col, colRoof = col, seg = 18) {
+  // hole { x, z, r } leaves a round opening in the roof (the cupola's well)
+  insideTurret(cx, cz, rx, rz, y0, y1, col, colRoof = col, seg = 18, hole = null) {
     const pts = [];
     for (let i = 0; i <= seg; i++) {
       const t = (i / seg) * Math.PI * 2;
@@ -464,7 +465,32 @@ export class GeoBuilder {
       const [x1, z1] = pts[i + 1];
       this.quad([x0, y0, z0], [x0, y1, z0], [x1, y1, z1], [x1, y0, z1], col);
       // roof fan, facing down
-      this.tri([cx, y1, cz], [x1, y1, z1], [x0, y1, z0], colRoof);
+      if (!hole) this.tri([cx, y1, cz], [x1, y1, z1], [x0, y1, z0], colRoof);
+    }
+    if (hole) {
+      // the roof as a ring round the opening: from each point on its rim, out
+      // to where that ray meets the turret wall
+      const edge = (a) => {
+        const dx = Math.sin(a);
+        const dz = Math.cos(a);
+        const ox = (hole.x - cx) / rx;
+        const oz = (hole.z - cz) / rz;
+        const A = (dx / rx) ** 2 + (dz / rz) ** 2;
+        const B = 2 * (ox * dx / rx + oz * dz / rz);
+        const C = ox * ox + oz * oz - 1;
+        const far = (-B + Math.sqrt(Math.max(0, B * B - 4 * A * C))) / (2 * A);
+        const near = Math.min(hole.r, far * 0.985);
+        return [
+          [hole.x + dx * near, y1, hole.z + dz * near],
+          [hole.x + dx * far, y1, hole.z + dz * far],
+        ];
+      };
+      const n = 32;
+      for (let i = 0; i < n; i++) {
+        const [i0, o0] = edge((i / n) * Math.PI * 2);
+        const [i1, o1] = edge(((i + 1) / n) * Math.PI * 2);
+        this.quad(i0, i1, o1, o0, colRoof);
+      }
     }
     return this;
   }

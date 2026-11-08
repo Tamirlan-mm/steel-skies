@@ -294,6 +294,8 @@ export function matchmake({
   difficulty = 'arcade',
   rng = Math.random,
   kind,
+  allyPool,
+  enemyPool,
 } = {}) {
   const k = kind || vehicleKind(playerSpec);
   const t = tuning(difficulty);
@@ -308,7 +310,7 @@ export function matchmake({
     battleBr: snapBr(battleBr),
     uptier: up,
     bracket: brBracket(snapBr(battleBr)),
-    allies: pickLineup({ ...opts, count: allies }),
-    enemies: pickLineup({ ...opts, count: enemies }),
+    allies: pickLineup({ ...opts, pool: allyPool || pool, count: allies }),
+    enemies: pickLineup({ ...opts, pool: enemyPool || pool, count: enemies }),
   };
 }

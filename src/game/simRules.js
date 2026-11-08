@@ -46,6 +46,41 @@ export function flightModelOf(d) {
   return isRealisticRules(d) ? 'realistic' : 'arcade';
 }
 
+// ---------------------------------------------------------------------------
+// WHO FOUGHT WHOM (simulator rosters)
+// ---------------------------------------------------------------------------
+// A simulator battle is one real front of the war, chosen from the nation the
+// player brought. Team 0 is always the player's side, whichever side that is.
+//   USSR               Eastern Front: Soviets against Germans
+//   USA / Britain      Western Front: Americans and British against Germans
+//   Germany            either front, drawn per battle
+//   Japan              Pacific: Japanese against Americans and British. Japan
+//                      has no tank in the game, so a Zero in a combined battle
+//                      gets German armour as the Axis ground force (the one
+//                      unhistorical pairing left).
+const FRONTS = {
+  east: { label: 'Eastern Front', axis: ['Germany'], allies: ['USSR'] },
+  west: { label: 'Western Front', axis: ['Germany'], allies: ['USA', 'Britain'] },
+  pacific: { label: 'Pacific', axis: ['Japan'], allies: ['USA', 'Britain'] },
+};
+
+// { label, own: [nations], enemy: [nations] }. For a nation the game does not
+// know: null (the battle falls back to the ordinary mixed roster).
+export function frontText(front) {
+  return `${front.label}: ${front.own.join(' + ')} against ${front.enemy.join(' + ')}`;
+}
+
+export function frontFor(nation, rng = Math.random) {
+  if (nation === 'USSR') return { label: FRONTS.east.label, own: FRONTS.east.allies, enemy: FRONTS.east.axis };
+  if (nation === 'USA' || nation === 'Britain') return { label: FRONTS.west.label, own: FRONTS.west.allies, enemy: FRONTS.west.axis };
+  if (nation === 'Japan') return { label: FRONTS.pacific.label, own: FRONTS.pacific.axis, enemy: FRONTS.pacific.allies };
+  if (nation === 'Germany') {
+    const f = rng() < 0.5 ? FRONTS.east : FRONTS.west;
+    return { label: f.label, own: f.axis, enemy: f.allies };
+  }
+  return null;
+}
+
 // HUD rules for simulator (the battles read these)
 export const SIM_HUD = {
   allyMarkerRange: 260,     // m: a friendly is tagged only this close (tanks)

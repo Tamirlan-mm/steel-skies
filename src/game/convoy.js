@@ -47,11 +47,18 @@ export const CONVOY = Object.freeze({
   truckTickets: 240,
   matchTime: 13 * 60,
   hp: 105,
-  // what one round does to a lorry: solid shot punches clean through the
-  // soft body (ten to stop it — engine, cab, driver), a high-explosive shell
-  // wrecks it in five, a machine gun in about two hundred and fifty rounds
-  apDamage: 11,
-  heDamage: 22,
+  // what one round does to a lorry, by calibre: solid shot punches through the
+  // soft body and needs the engine, cab or driver (a 76 mm in 3, a 122 mm in 2,
+  // a 37 mm in 5), a high-explosive shell of 75 mm and up wrecks it outright
+  // (37 mm: 3). A machine gun takes about two hundred and fifty rounds.
+  apPerMm: 0.6,
+  hePerMm: 1.4,
+  heDamage: 40,     // a near miss: blast and splinters (explosiveDamage)
+  // The bots keep their old, slower pace: several of them shoot at the column
+  // at once from the first minute, and at the full figures above the ambush
+  // burned it in 40-150 s in 12 battles of 12, so it could not be escorted.
+  botApDamage: 11,
+  botHeDamage: 22,
   mgFactor: 0.35,   // of a bullet's damage to a hull: rifle-calibre rounds through sheet steel and canvas
 });
 
@@ -445,7 +452,11 @@ export class ConvoyBattle extends Battle {
       shells.splice(i, 1);
       this.effects.impactSparks(point, true);
       const he = s.kind === 'HE' || s.kind === 'HEAT';
-      this.hitTruck(hitTruck, s.shooter, he ? CONVOY.heDamage : CONVOY.apDamage, point);
+      const cal = (s.shell && s.shell.caliber) || 75;
+      const dmg = s.shooter === this.player
+        ? cal * (he ? CONVOY.hePerMm : CONVOY.apPerMm)
+        : he ? CONVOY.botHeDamage : CONVOY.botApDamage;
+      this.hitTruck(hitTruck, s.shooter, dmg, point);
     }
   }
 
@@ -518,7 +529,7 @@ export class ConvoyBattle extends Battle {
       if (!t.alive || t.arrived) continue;
       if (!this.realistic && shooter && t.team === shooter.team) continue;
       if (t.position.distanceTo(point) > radius + t.radius) continue;
-      this.hitTruck(t, shooter, CONVOY.heDamage);
+      this.hitTruck(t, shooter, shooter === this.player ? CONVOY.heDamage : CONVOY.botHeDamage);
     }
   }
 

@@ -593,6 +593,7 @@ export class Tank {
     // on a capture point the team holds (the battle sets atSupport each frame)
     this.atSupport = false;
     this.supportCrewT = 0;
+    this.supportCrewUsed = false; // the point sends one man per tank, once
     // left on so a battle that has not been taught the repair key still sees
     // its crews put their own tracks back on, exactly as they always did
     this.autoRepair = true;
@@ -1272,18 +1273,23 @@ export class Tank {
   }
 
   // Capture-point support: the battle sets atSupport each frame (true on a
-  // point the team holds). While on it, every SUPPORT_CREW_PERIOD seconds one
-  // knocked-out crewman is replaced. The clock only runs while a seat is
-  // empty and is kept between visits, so stepping off and on gains nothing.
+  // point the team holds). After SUPPORT_CREW_PERIOD seconds on it, ONE
+  // knocked-out crewman is replaced, once in the tank's life: this is the only
+  // way a dead seat is ever filled by a new man. The clock only runs while a
+  // seat is empty and is kept between visits, so stepping off and on gains
+  // nothing.
   updateSupport(dt) {
-    if (!this.atSupport || !this.alive) return;
+    if (!this.atSupport || !this.alive || this.supportCrewUsed) return;
     if (this.crew >= this.crewStations.length) {
       this.supportCrewT = 0;
       return;
     }
     this.supportCrewT += dt;
     if (this.supportCrewT >= SUPPORT_CREW_PERIOD) {
-      if (this.replenishCrewMember()) this.supportCrewT = 0;
+      if (this.replenishCrewMember()) {
+        this.supportCrewT = 0;
+        this.supportCrewUsed = true;
+      }
     }
   }
 
@@ -1404,9 +1410,8 @@ export class Tank {
     return true;
   }
 
-  // Patches up the worst wounded man; failing that, drags a knocked-out one
-  // back into the most important EMPTY seat in no state to do much (which
-  // also calls off anybody who was on his way to fill that seat).
+  // Patches up the worst wounded man. A knocked-out man stays out: a kit does
+  // not bring him back (only the held point's one replacement fills a seat).
   useFirstAid() {
     if (!this.alive || this.consumables.firstAid <= 0) return null;
     let worst = null;
@@ -1423,18 +1428,6 @@ export class Tank {
       this.crewAlive[worst] = 1;
       this.recomputeCrew();
       return worst;
-    }
-    if (this.crew < this.crewStations.length) {
-      for (let i = 0; i < SEATS_BY_IMPORTANCE.length; i++) {
-        const seat = SEATS_BY_IMPORTANCE[i];
-        if (!this.hasStation(seat) || this.crewAlive[seat] > 0) continue;
-        this.consumables.firstAid--;
-        this.crewAlive[seat] = 0.45;
-        this.logCrew({ type: 'revived', role: seat });
-        this.planSwaps();
-        this.recomputeCrew();
-        return seat;
-      }
     }
     return null;
   }

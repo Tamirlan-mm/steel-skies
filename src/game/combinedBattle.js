@@ -85,7 +85,7 @@ import { opticSteps } from '../ui/hud.js';
 import { clamp, lerp, rand, wrapAngle } from '../core/utils.js';
 import { stationsFor } from '../vehicles/interior/index.js';
 import { gunSightOrigin } from '../vehicles/interior/sight.js';
-import { isRealisticRules, isSimulator, flightModelOf, SIM_HUD, simAAPlanes } from './simRules.js';
+import { frontText, isRealisticRules, isSimulator, flightModelOf, SIM_HUD, simAAPlanes } from './simRules.js';
 
 // The terrain mesh is +/-1300: it covers the aircraft limit (MAP_EDGE 1200) and
 // both strips, exactly as the air battle's own 2600 mesh does. 277 segments
@@ -573,7 +573,7 @@ export class CombinedBattle {
       this.effects.mgFlash(gun.position, tmpA.set(0, 1, 0));
     };
     this._shellOpts = { listenerPos: this.camera.position, onFlyby: this._onShellFlyby, player: null };
-    this._bulletOpts = { listenerPos: this.camera.position, onFlyby: this._onShellFlyby, player: null };
+    this._bulletOpts = { listenerPos: this.camera.position, onFlyby: this._onShellFlyby, player: null, friendlyFire: this.simulator };
     this._engineOpts = {
       pos: null, rpm: 0, throttle: 0, type: 'tank', moving: false, shift: false,
     };
@@ -598,6 +598,7 @@ export class CombinedBattle {
     }
     this.plan = plan;
     this.spawnBudget = (plan && plan.spawnBudget) || createSpawnBudget('combined');
+    if (plan && plan.front) hud.incomingMessage?.(frontText(plan.front), 'info', true);
     const playerSpec = this.playerIsPlane ? PLANE_SPECS[playerSpecId] : TANK_SPECS[playerSpecId];
 
     for (let team = 0; team < 2; team++) {

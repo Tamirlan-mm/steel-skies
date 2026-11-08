@@ -305,7 +305,7 @@ export class BulletManager {
   // onHit(targetPlane, dmg, shooter, point)
   // ground: entities with { alive, team, position, radius } — sphere hit test,
   // reported through onGroundHit(target, bullet, point). Same-team ground
-  // targets are ignored (no friendly fire).
+  // targets are ignored unless opts.friendlyFire (simulator).
   // opts (all optional): { listenerPos, onFlyby(kind, point, missDist), player }
   update(dt, planes, onHit, effects = null, ground = [], onGroundHit = null, opts = null) {
     const listener = opts && opts.listenerPos ? opts.listenerPos : null;
@@ -379,7 +379,9 @@ export class BulletManager {
         // ground targets: segment vs sphere (center lifted ~1.2m off the dirt)
         if (b.active && ground.length > 0) {
           for (const g of ground) {
-            if (!g.alive || (b.shooter && g.team === b.shooter.team)) continue;
+            if (!g.alive || g === b.shooter) continue;
+            // opts.friendlyFire (simulator): a burst hits whoever is in the way
+            if (b.shooter && g.team === b.shooter.team && !(opts && opts.friendlyFire)) continue;
             // same cheap reject the plane loop above already has: without it a
             // burst of cannon fire runs the full sphere solve against every
             // ground unit on the map, twice per bullet per frame

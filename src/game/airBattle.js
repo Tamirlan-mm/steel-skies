@@ -45,7 +45,7 @@ import {
 } from '../core/audio.js';
 import { applyMods } from './mods.js';
 import { progress, planBattle, REWARD } from './progress.js';
-import { isRealisticRules, isSimulator, flightModelOf, SIM_HUD, simAAPlanes } from './simRules.js';
+import { frontText, isRealisticRules, isSimulator, flightModelOf, SIM_HUD, simAAPlanes } from './simRules.js';
 import { clamp, lerp, rand, wrapAngle, moveToward } from '../core/utils.js';
 
 const TICKETS_MAX = 1500;
@@ -279,6 +279,9 @@ class ColumnVehicle {
   }
 }
 
+// simulator: strafing runs can hit your own side's ground units
+const AIR_SIM_BULLETS = { friendlyFire: true };
+
 export class AirBattle {
   constructor(renderer, playerSpecId, hud, onEnd) {
     this.renderer = renderer;
@@ -418,6 +421,7 @@ export class AirBattle {
     const plan = planBattle({ mode: 'air', kind: 'air', playerSpecId });
     this.plan = plan;
     this.spawnBudget = plan.spawnBudget;
+    if (plan.front) hud.incomingMessage?.(frontText(plan.front), 'info', true);
 
     for (let team = 0; team < 2; team++) {
       const sideX = team === 0 ? -1 : 1;
@@ -795,6 +799,7 @@ export class AirBattle {
       this.effects,
       this.groundUnits,
       (g, b, point) => this.onBulletGround(g, b, point),
+      this.simulator ? AIR_SIM_BULLETS : null,
     );
 
     this.updateRearm(dt);

@@ -1,7 +1,7 @@
 import { TANK_SPECS } from '../vehicles/tanks.js';
 import { PLANE_SPECS } from '../vehicles/planes.js';
 import { brOf, vehicleKind, matchmake } from './battleRating.js';
-import { normDifficulty } from './simRules.js';
+import { normDifficulty, isSimulator, frontFor } from './simRules.js';
 
 // Player progression: an economy rather than a score counter.
 //
@@ -1145,27 +1145,44 @@ export function planBattle({
   const playerId = playerSpecId || progress.getSelected(k);
   const playerSpec = specById(playerId);
   const difficulty = progress.getDifficulty();
+  // simulator: both teams come from one real front of the war (simRules.js)
+  const front = isSimulator(difficulty) && playerSpec ? frontFor(playerSpec.nation, rng) : null;
+  const sidePools = (kindKey) => {
+    if (!front) return {};
+    const all = Object.values(SPEC_INDEX).filter((s) => vehicleKind(s) === kindKey);
+    const of = (nations) => all.filter((s) => nations.includes(s.nation));
+    let allyPool = of(front.own);
+    const enemyPool = of(front.enemy);
+    // Japan has no tanks: German armour is the Axis ground force
+    if (!allyPool.length) allyPool = of(['Germany']);
+    return { allyPool, enemyPool: enemyPool.length ? enemyPool : undefined };
+  };
   const air = matchmake({
     playerSpec, difficulty, rng, kind: 'air',
     allies: mode === 'combined' ? 3 : allies,
     enemies: mode === 'combined' ? 3 : enemies,
+    ...sidePools('air'),
   });
   const ground = matchmake({
     playerSpec, difficulty, rng, kind: 'ground',
     allies: mode === 'combined' ? 5 : allies,
     enemies: mode === 'combined' ? 5 : enemies,
+    ...sidePools('ground'),
   });
   const own = kindOf(playerSpec) === 'air' ? air : ground;
+  const spawnBudget = createSpawnBudget(mode);
+  if (front) spawnBudget.nations = front.own;
   return {
     playerId,
     playerSpec,
     difficulty,
+    front,
     br: own.playerBr,
     battleBr: own.battleBr,
     uptier: own.uptier,
     bracket: own.bracket,
     lineup: progress.getLineup(mode),
-    spawnBudget: createSpawnBudget(mode),
+    spawnBudget,
     allies: own.allies,
     enemies: own.enemies,
     tankAllies: ground.allies,
