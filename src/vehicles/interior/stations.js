@@ -239,13 +239,24 @@ export function deriveTankInterior(spec) {
 
   if (roles.includes('gunner')) {
     const gnr = box.crew_gunner;
+    const gEye = gnr ? [gnr.pos.x, tY(t.h * 0.55), tZ(gnr.pos.z + 0.25)] : [t.w * 0.22, tY(t.h * 0.55), tZ(0.1)];
     stations.gunner = {
       frame: tFrame,
       // the gunner's view is the H-02 sight (battle sniper view); this eye
       // only places his seat and his sight housing in the interior
-      eye: gnr ? [gnr.pos.x, tY(t.h * 0.55), tZ(gnr.pos.z + 0.25)] : [t.w * 0.22, tY(t.h * 0.55), tZ(0.1)],
+      eye: gEye,
       device: { type: 'sight' },
       seat: seat('gunner'),
+      // wave 7: his look-around view beside the sight (E toggles). The
+      // default is a seated view in the turret, head back off the
+      // eyepiece; a per-vehicle file gives him his own vision device
+      // (periscope) where the real tank had one.
+      vision: {
+        frame: tFrame,
+        eye: [gEye[0], gEye[1] + 0.04, gEye[2] - 0.16],
+        look: [0, -0.06],
+        device: { type: 'none' },
+      },
     };
   }
 
@@ -313,5 +324,36 @@ export function deriveTankInterior(spec) {
     devices: {},
     // how hard the head rides the hull (station movement shake), 0..2
     shake: 1,
+  };
+}
+
+// The gunner's look-around through the roof periscope on his side of the
+// turret (wave 7) — the one the outside model draws there (tanks.js: two
+// roof periscopes at x = +-0.28 w, z = 0.2 len, on every closed turret).
+// A per-vehicle file uses it where the real gunner had such a periscope:
+//   gunner: { vision: gunnerPeriscope(spec, gunnerEye, { yaw: [-0.4, 0.4] }) }
+// The eye moves up to its eyepiece under the roof; index.js puts the
+// aperture just outside the head the outside model draws (device.headAt).
+export function gunnerPeriscope(spec, gunnerEye, opts = {}) {
+  const t = spec.turret;
+  const casemate = spec.shape && spec.shape.turret === 'casemate';
+  const roof = spec.hull.trackH + spec.hull.h;
+  const side = (gunnerEye && gunnerEye[0] < 0) ? -1 : 1;
+  const hx = side * t.w * 0.28;
+  const hz = t.len * 0.2 + (casemate ? t.offZ : 0);
+  const top = t.h + (casemate ? roof : 0);
+  // under and behind the periscope's body (a per-vehicle file may draw it
+  // there as an extra): eyepiece at its foot, 0.24 under the roof skin
+  const eye = [hx, top - 0.05 - (opts.drop ?? 0.24), hz - (opts.back ?? 0.14)];
+  return {
+    frame: casemate ? 'hull' : 'turret',
+    eye,
+    look: [0, 0],
+    device: {
+      type: 'periscope', w: opts.w ?? 0.12, h: opts.h ?? 0.045, dist: opts.dist ?? 0.08,
+      rise: top + 0.0375 - eye[1], fwd: 0.06, headAt: [hx, hz],
+    },
+    limits: { yaw: opts.yaw || [-0.35, 0.35], pitch: opts.pitch || [-0.2, 0.25] },
+    fov: opts.fov ?? 50,
   };
 }

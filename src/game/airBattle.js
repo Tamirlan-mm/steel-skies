@@ -2182,6 +2182,9 @@ export class AirBattle {
     // the traverse never sees them.
     disposeAirfields(this.airfields);
     this._afCtx = null;
+    // the wave-6 cockpit layer: freed and detached by its owner, not left
+    // for the traverse below to find
+    this.planeCam?.disposeCockpit?.();
     this.effects.clearSmokeScreens();
     // the scenery keeps its own buffers and a reference to our effects system;
     // both outlive the scene graph unless it is told to let go

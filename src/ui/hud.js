@@ -718,7 +718,7 @@ const TOUCH_HELP_TANK =
   '<span>Left stick — drive · Drag — aim the gun</span>' +
   '<span>FIRE — main gun · MG — machine gun (drag on either aims too)</span>' +
   '<span>SIGHT — gunner sight · + / − — sight zoom · pinch — zoom</span>' +
-  '<span>CREW — next crew station (then back to the outside view)</span>' +
+  '<span>CREW — next crew station: gunner sight, then his look-around, then back to the outside view</span>' +
   '<span>AP / HE chips — shell · REPAIR (hold) · EXT · SMOKE · AID</span>' +
   '<span>❚❚ — pause · MAP — tactical map · ⏏ (hold) — abandon</span>';
 const TOUCH_HELP_ARTY = '<span>ART — artillery strike</span>';
@@ -947,6 +947,24 @@ export class HUD {
   setCrosshairVisible(v) {
     this.crosshair.style.display = v ? 'block' : 'none';
     if (this.penMark) this.penMark.style.display = v ? '' : 'none';
+  }
+
+  // wave 7: while the player sits at a crew station (vehicles/interior —
+  // periscope, blocks, slit, the loader's interior, the gunner's look-around)
+  // the world markers are hidden and the damage / status panels dimmed, so
+  // they no longer draw over the view; the station tag, the speed and the
+  // reload (ammo panel) stay as they are. Called by the station controller
+  // when the view changes; false puts everything back.
+  setCrewStation(on) {
+    on = !!on;
+    if (this._crewStationOn === on) return;
+    this._crewStationOn = on;
+    if (this.markersRoot) this.markersRoot.style.visibility = on ? 'hidden' : '';
+    for (const el of [this.damagePanel, this.statusPanel]) {
+      if (!el || !el.style) continue;
+      el.style.opacity = on ? '0.28' : '';
+      el.style.transition = 'opacity 0.2s';
+    }
   }
 
   setScopeVisible(v) {

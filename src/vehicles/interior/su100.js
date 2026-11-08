@@ -96,6 +96,18 @@ export default defineTankInterior('su100', (spec, base) => {
         eye: gnr,
         device: { type: 'sight', w: 0.06, h: 0.06, dist: 0.06 },
         seat: [0.34, 1.33, 0.92],
+        // his look-around (wave 7): the Hertz panoramic sight under the left
+        // roof hatch (its head turns all round above the roof); he leans
+        // left to its eyepiece. No outside head is drawn there, so the
+        // world is seen from just over the roof.
+        vision: {
+          frame: 'hull',
+          eye: [0.6, roofIn - 0.36, 0.88],
+          look: [0, 0],
+          device: { type: 'periscope', w: 0.08, h: 0.05, dist: 0.07, rise: caseRoof + 0.17 - (roofIn - 0.36), fwd: 0.03 },
+          limits: { yaw: [-1.6, 1.6], pitch: [-0.2, 0.25] },
+          fov: 44,
+        },
       },
       loader: {
         frame: 'hull',
@@ -162,7 +174,9 @@ export default defineTankInterior('su100', (spec, base) => {
         { frame: 'hull', pos: [0.6, roofIn - 0.17, 1.12], cyl: true, r: 0.05, len: 0.32 },
         { frame: 'hull', pos: [0.6, roofIn - 0.34, 1.02], size: [0.09, 0.08, 0.12], color: 0x2a2b28 },
         // the MK-IV periscope in the cupola lid
-        { frame: 'hull', pos: [cupX, caseRoof + cu.h - 0.14, cupZ - 0.04], size: [0.12, 0.13, 0.07] },
+        // (wave 7: up under the lid, clear of the commander's head — it hung
+        // round his eye and was clipped by the near plane)
+        { frame: 'hull', pos: [cupX, blockY + 0.05 + 0.05, cupZ - 0.04], size: [0.12, 0.1, 0.07] },
         // the ball mount's inner collar on the front plate, round the gun
         { frame: 'hull', pos: [gunX, gunY, innerZ(gunY) - 0.05], cyl: true, r: spec.shape.mantletR * 0.95, len: 0.1, axis: 'z' },
         // compressed-air starter bottles at the driver's left knee

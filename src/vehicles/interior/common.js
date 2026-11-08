@@ -80,6 +80,10 @@ export function createLayerUniforms() {
     uLampR: { value: lampR },
     uSmoke: { value: 0 },
     uSmokeCol: { value: new THREE.Vector3(0.32, 0.31, 0.3) },
+    // the layer's own exposure, multiplied in before three's tone mapping:
+    // a crewman's eye adapts to the compartment, not to the noon sky the
+    // renderer's exposure is solved for (layer.js sets it per frame)
+    uExpo: { value: 1 },
   };
 }
 
@@ -126,6 +130,7 @@ uniform float uSmoke;
 uniform vec3 uSmokeCol;
 uniform float uEmis;
 uniform float uOpacity;
+uniform float uExpo;
 #ifdef LAYER_UV
 uniform sampler2D uMap;
 varying vec2 vUv;
@@ -153,7 +158,7 @@ void main() {
   vec3 c = base * light + base * uEmis;
   float s = clamp(uSmoke * (1.0 - exp(-vDist * 1.1)), 0.0, 0.94);
   c = mix(c, uSmokeCol * (light * 0.6 + 0.01), s);
-  gl_FragColor = vec4(c, uOpacity);
+  gl_FragColor = vec4(c * uExpo, uOpacity);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -381,7 +386,10 @@ export class GeoBuilder {
   // An extruded side profile seen from the INSIDE: `profile` is a convex
   // polygon of [y, z] points (any winding), extruded across x = -hw..hw; the
   // faces look inward (a hull compartment with a sloped glacis).
-  insideProfile(profile, hw, col, colSide = col) {
+  // slope (optional): { yKnee, hwTop, yTop } — above y = yKnee the side walls
+  // lean in linearly to half-width hwTop at y = yTop (sloped upper side
+  // plates); below the knee they stand at hw.
+  insideProfile(profile, hw, col, colSide = col, slope = null) {
     // orient the polygon counter-clockwise in (z, y)
     let area = 0;
     for (let i = 0; i < profile.length; i++) {
@@ -389,7 +397,26 @@ export class GeoBuilder {
       const [y1, z1] = profile[(i + 1) % profile.length];
       area += z0 * y1 - z1 * y0;
     }
-    const P = area > 0 ? profile : [...profile].reverse();
+    let P = area > 0 ? profile : [...profile].reverse();
+    const hwAt = (y) => {
+      if (!slope || !(slope.yTop > slope.yKnee)) return hw;
+      const t = Math.min(1, Math.max(0, (y - slope.yKnee) / (slope.yTop - slope.yKnee)));
+      return hw + (slope.hwTop - hw) * t;
+    };
+    // a knee: split every edge that crosses it, so each strip is planar
+    if (slope) {
+      const out = [];
+      for (let i = 0; i < P.length; i++) {
+        const a = P[i];
+        const b = P[(i + 1) % P.length];
+        out.push(a);
+        if ((a[0] - slope.yKnee) * (b[0] - slope.yKnee) < 0) {
+          const t = (slope.yKnee - a[0]) / (b[0] - a[0]);
+          out.push([slope.yKnee, a[1] + (b[1] - a[1]) * t]);
+        }
+      }
+      P = out;
+    }
     const n = P.length;
     for (let i = 0; i < n; i++) {
       const [y0, z0] = P[i];
@@ -397,13 +424,21 @@ export class GeoBuilder {
       // a wall strip between consecutive profile points, facing in
       const k = Math.abs(z1 - z0) > Math.abs(y1 - y0) ? 1.0 : 0.88;
       const cc = [col[0] * k, col[1] * k, col[2] * k];
-      this.quad([hw, y0, z0], [-hw, y0, z0], [-hw, y1, z1], [hw, y1, z1], cc);
+      const w0 = hwAt(y0);
+      const w1 = hwAt(y1);
+      this.quad([w0, y0, z0], [-w0, y0, z0], [-w1, y1, z1], [w1, y1, z1], cc);
     }
-    // side walls (fan), facing in
-    for (let i = 1; i < n - 1; i++) {
-      const a = P[0]; const b = P[i]; const c = P[i + 1];
-      this.tri([hw, a[0], a[1]], [hw, b[0], b[1]], [hw, c[0], c[1]], colSide);
-      this.tri([-hw, a[0], a[1]], [-hw, c[0], c[1]], [-hw, b[0], b[1]], colSide);
+    // side walls, facing in: one fan per side of the knee (each half planar)
+    const halves = slope
+      ? [P.filter((p) => p[0] <= slope.yKnee + 1e-6), P.filter((p) => p[0] >= slope.yKnee - 1e-6)]
+      : [P];
+    for (const Q of halves) {
+      for (let i = 1; i < Q.length - 1; i++) {
+        const a = Q[0]; const b = Q[i]; const c = Q[i + 1];
+        const wa = hwAt(a[0]); const wb = hwAt(b[0]); const wc = hwAt(c[0]);
+        this.tri([wa, a[0], a[1]], [wb, b[0], b[1]], [wc, c[0], c[1]], colSide);
+        this.tri([-wa, a[0], a[1]], [-wc, c[0], c[1]], [-wb, b[0], b[1]], colSide);
+      }
     }
     return this;
   }

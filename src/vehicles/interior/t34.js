@@ -1,4 +1,5 @@
 import { defineTankInterior } from './registry.js';
+import { gunnerPeriscope } from './stations.js';
 
 // INTERIOR: T-34-85, 1944-45 production (ZiS-S-53 85 mm, three-man cast
 // turret on the 1.60 m ring, five-slot commander's cupola, glacis driver's
@@ -156,6 +157,9 @@ export default defineTankInterior('t34', (spec, base) => {
         eye: gEye,
         device: { type: 'sight', w: 0.06, h: 0.05, dist: 0.06 },
         seat: [gEye[0] + 0.05, gEye[1] - 0.24, gEye[2] - 0.32],
+        // the MK-4 periscope in the roof ahead of him (rotating, the same
+        // pattern as the loader's) (wave 7)
+        vision: gunnerPeriscope(spec, gEye, { yaw: [-0.9, 0.9] }),
       },
       loader: {
         frame: 'turret',

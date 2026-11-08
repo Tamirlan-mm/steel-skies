@@ -412,6 +412,7 @@ export class Battle {
       <span>1 / 2 / 3 — shell types · R (hold) — repair · F — extinguisher</span>
       <span>G — smoke grenade · H — first aid · V — scout${arty}</span>
       <span>C — crew stations · X — third person · Scroll — hatch (in a station)</span>
+      <span>E — gunner: sight / look-around (in the gunner's station)</span>
       <span>M — tactical map · Tab — scoreboard · J (hold) — abandon · Esc — pause</span>
     `);
   }

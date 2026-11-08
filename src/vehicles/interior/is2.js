@@ -1,4 +1,5 @@
 import { defineTankInterior } from './registry.js';
+import { gunnerPeriscope } from './stations.js';
 
 // IS-2 (1944, "straightened" nose), 122 mm D-25T, crew of four.
 //
@@ -82,6 +83,8 @@ export default defineTankInterior('is2', (spec, base) => {
         eye: gEye,
         device: { type: 'sight', w: 0.1, h: 0.06, dist: 0.07 },
         seat: [gEye[0], 0.0, gEye[2] - 0.2],
+        // the MK-IV periscope in the roof over him (wave 7)
+        vision: gunnerPeriscope(spec, gEye, { yaw: [-0.9, 0.9] }),
       },
       loader: {
         frame: 'turret',

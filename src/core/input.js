@@ -40,7 +40,9 @@ export const ACTIONS = [
   { code: 'KeyT', tank: 'Call artillery' },
   { code: 'KeyJ', tank: 'Abandon vehicle (hold)', air: 'Bail out (hold)' },
   { code: 'KeyQ', air: 'Rudder left' },
-  { code: 'KeyE', air: 'Rudder right' },
+  // wave 7: in the gunner's station E swaps his sight for his look-around
+  // view (vehicles/interior); the same code as the air rudder, like KeyR
+  { code: 'KeyE', tank: 'Gunner: sight / look-around (in the gunner\'s station)', air: 'Rudder right' },
   { code: 'KeyB', air: 'Airbrake / wheel brakes' },
   // wave 6 crew stations (vehicles/interior): C steps through the seats
   // (commander, driver, loader, bow gunner, gunner, then the outside view),

@@ -256,6 +256,39 @@ function lookFrom(camera, pos, target, fov) {
   camera.updateMatrixWorld();
 }
 
+// A near layer (tank interior, aircraft cockpit — interior/common.js) is
+// drawn around the STATION eye and over the whole world. A bench path that
+// moves the camera away from that eye (?station= with an outside path) would
+// show it as a box floating round the tank, so it is hidden whenever the
+// camera the frame renders with is not at the station's eye. Returns what it
+// hid (the bench row reports it).
+const LAYER_EYE_TOL = 0.5; // m: station shake is <= 0.035 m
+function hideOffCameraLayers(b) {
+  const cam = b && b.camera;
+  if (!cam) return null;
+  let hid = null;
+  const cs = b._crewStations;
+  const L = cs && cs.layer;
+  if (L && L.root && L.root.visible) {
+    const eye = cs._pose && cs._pose.aperture;
+    if (!cs.viewing || !eye || cam.position.distanceTo(eye) > LAYER_EYE_TOL) {
+      L.setVisible(false);
+      hid = 'interior';
+    }
+  }
+  const pc = b.planeCam;
+  const C = pc && pc.cockpitLayer;
+  if (C && C.root && C.root.visible) {
+    const p = C.plane && C.plane.position;
+    // the cockpit eye sits within ~2 m of the aeroplane's origin
+    if (!p || cam.position.distanceTo(p) > 3) {
+      C.setVisible(false);
+      hid = hid ? hid + '+cockpit' : 'cockpit';
+    }
+  }
+  return hid;
+}
+
 // toward the far side of the map from the player, or along the hull
 function enemyward(battle) {
   const p = battle.player.position;
@@ -683,7 +716,10 @@ export function startBench(shell) {
     let n = 1;
     shell.hooks.afterUpdate = camFn
       ? (b) => {
-        if (b === battle) camFn(b, k / n, ctx);
+        if (b !== battle) return;
+        camFn(b, k / n, ctx);
+        const hid = hideOffCameraLayers(b);
+        if (hid) ctx.layerHidden = hid;
       }
       : null;
     // the chain is built on the first frame; time each of its passes
@@ -752,6 +788,7 @@ export function startBench(shell) {
     }
     if (path.id === 'low_pan') extra.roadFound = !!ctx.roadFound;
     if (path.optic) extra.optic = !!battle.sniper;
+    if (ctx.layerHidden) extra.layerHidden = ctx.layerHidden;
     const row = summarise(tier, path, sink, gpuFrames, extra);
     results.runs.push(row);
 

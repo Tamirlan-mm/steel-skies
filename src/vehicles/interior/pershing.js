@@ -1,4 +1,5 @@
 import { defineTankInterior } from './registry.js';
+import { gunnerPeriscope } from './stations.js';
 
 // M26 Pershing (1945 production: 90 mm M3 in combination mount M67, no
 // muzzle brake, torsion bars, Ford GAF V-8 and Torqmatic box at the REAR).
@@ -58,6 +59,9 @@ export default defineTankInterior('pershing', (spec, base) => {
         eye: gnr,
         device: { type: 'sight', w: 0.12, h: 0.06, dist: 0.07 },
         seat: [gnr[0], -0.05, gnr[2] - 0.3],
+        // the M10 periscope sight in the roof: its 1x window is his
+        // look-out beside the M71 telescope (wave 7)
+        vision: gunnerPeriscope(spec, gnr, { yaw: [-0.3, 0.3] }),
       },
       loader: {
         frame: 'turret',

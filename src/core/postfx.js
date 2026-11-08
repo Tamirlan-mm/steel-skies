@@ -1119,8 +1119,10 @@ class SeeThroughPass extends Pass {
 // the motion blur read that instead. It only runs while one of them does.
 //
 // Chain on high (see build()):
-//   render(opaque) -> AO -> depthCopy -> clouds -> seeThrough -> motionBlur
-//   -> bloom -> output -> SMAA -> finish
+//   render(opaque) -> AO -> depthCopy -> clouds -> seeThrough -> blurDepth
+//   -> motionBlur -> bloom -> output -> SMAA -> finish
+// (blurDepth: a second copy for the blur only, after the see-through half,
+// so the near layers' squashed depth keeps them out of it — see build())
 // The slab is composited over the opaque world and under the see-through
 // half, so smoke, tracers and fire in front of a cloud are not veiled by it;
 // the blur sees everything, the bloom sees the blurred, clouded HDR frame.
@@ -1688,6 +1690,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   let depthPass = null;    // S-02 / K-02 (high only), see LinearDepthPass
   let cloudPass = null;
   let blurPass = null;
+  // K-02 vs the near layers: the blur's own depth copy, taken AFTER the
+  // see-through half (null when there is no split: the one copy already sees
+  // everything). The tank interior / aircraft cockpit layers (interior/
+  // common.js) are see-through materials that write a depth squashed into the
+  // front 1 % of the range; in this copy they read as ~1.01 x camera.near,
+  // under the blur's uNear, so they are neither streaked nor sampled into the
+  // world's streaks. The first copy (before see-through) still feeds clouds.
+  let blurDepthPass = null;
   // P-02: the ONE depth buffer of the frame. Both composer targets draw into
   // it (see "opaque first" above), GTAO reads it instead of re-rendering the
   // scene for a G-buffer of its own, and later passes get it as
@@ -1765,6 +1775,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     disposePass(depthPass);
     disposePass(cloudPass);
     disposePass(blurPass);
+    disposePass(blurDepthPass);
     if (sharedDepth) sharedDepth.dispose();
     composer = null;
     renderPass = null;
@@ -1777,6 +1788,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     depthPass = null;
     cloudPass = null;
     blurPass = null;
+    blurDepthPass = null;
     sharedDepth = null;
     lensCam.have = false;
   }
@@ -1867,9 +1879,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     }
     L.active = blur;
     if (depthPass) {
-      depthPass.enabled = clouds || blur;
+      depthPass.enabled = clouds || (blur && !blurDepthPass);
       depthPass.source = sharedDepth;
       depthPass.camera = cam;
+    }
+    if (blurDepthPass) {
+      blurDepthPass.enabled = blur;
+      blurDepthPass.source = sharedDepth;
+      blurDepthPass.camera = cam;
     }
   }
 
@@ -1932,7 +1949,13 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
         depthPass = new LinearDepthPass();
         depthPass.source = sharedDepth;
         cloudPass = new CloudPass(depthPass);
-        blurPass = new MotionBlurPass(depthPass);
+        if (aoPass) {
+          // split chain: the near layers land in the see-through half
+          blurDepthPass = new LinearDepthPass();
+          blurDepthPass.__kind = 'blurDepth';
+          blurDepthPass.source = sharedDepth;
+        }
+        blurPass = new MotionBlurPass(blurDepthPass || depthPass);
       }
       const addSkyPasses = () => {
         if (depthPass) composer.addPass(depthPass);
@@ -1965,7 +1988,10 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
         addSkyPasses();
       }
       // K-02 on everything the frame holds, before the bloom finds its peaks
-      if (blurPass) composer.addPass(blurPass);
+      if (blurPass) {
+        if (blurDepthPass) composer.addPass(blurDepthPass);
+        composer.addPass(blurPass);
+      }
 
       if (bloomWanted) {
         bloomPass = new UnrealBloomPass(

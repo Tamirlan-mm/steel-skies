@@ -87,6 +87,16 @@ export default defineTankInterior('wirbelwind', (spec, base) => {
         eye: [0, 0.27, -0.6],
         device: { type: 'sight', w: 0.02, h: 0.02, dist: 0.12 },
         seat: [0, 0.75, -0.62],
+        // his look-around (wave 7): head up off the reflector sight, over
+        // the guns in the open tub — the tub IS the vision device
+        vision: {
+          frame: 'turret',
+          eye: [0, t.h + 0.12, -0.5],
+          look: [0, 0.08],
+          device: { type: 'none' },
+          limits: { yaw: [-1.6, 1.6], pitch: [-0.7, 1.2] },
+          fov: 72,
+        },
       },
       loader: {
         frame: 'turret',

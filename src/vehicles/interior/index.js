@@ -59,21 +59,19 @@ try {
   /* a touch table without the hook: the keyboard still works */
 }
 
-export const STATION_HELP = 'C — crew stations · X — third person';
+export const STATION_HELP = 'C — crew stations · E — gunner: sight / look around · X — third person';
 
 const finite3 = (a) => Array.isArray(a) && a.length === 3 && a.every((v) => Number.isFinite(v));
 
 // Fill in every station's device and limits, and drop anything malformed
 // (a broken per-vehicle file must never take a battle down).
-function finalize(def, base) {
-  const out = { ...def, stations: {} };
-  for (const key of Object.keys(def.stations || {})) {
-    const st = def.stations[key];
-    if (!st || typeof st !== 'object') continue;
-    const b = base.stations[key] || {};
+function normStation(key, st, b) {
+  if (!st || typeof st !== 'object') return null;
+  b = b || {};
+  {
     const frame = st.frame === 'hull' || st.frame === 'turret' ? st.frame : b.frame || 'hull';
     const eye = finite3(st.eye) ? st.eye : b.eye;
-    if (!finite3(eye)) continue;
+    if (!finite3(eye)) return null;
     const type = st.device && DEVICE_DEFAULTS[st.device.type] ? st.device.type : st.device && st.device.type === 'sight' ? 'sight' : 'none';
     const device = { ...(DEVICE_DEFAULTS[type] || {}), ...(st.device || {}), type };
     const lim = limitsFor(type);
@@ -93,7 +91,7 @@ function finalize(def, base) {
         },
       };
     }
-    out.stations[key] = {
+    return {
       ...st,
       key,
       frame,
@@ -106,6 +104,30 @@ function finalize(def, base) {
       shake: Number.isFinite(st.shake) ? st.shake : 1,
       seat: finite3(st.seat) ? st.seat : null,
     };
+  }
+}
+
+function finalize(def, base) {
+  const out = { ...def, stations: {} };
+  for (const key of Object.keys(def.stations || {})) {
+    const st = normStation(key, def.stations[key], base.stations[key]);
+    if (!st) continue;
+    // the gunner's look-around view (wave 7): his own vision device, or a
+    // seated view in the turret, beside the sight (index.js gunnerLook)
+    if (key === 'gunner') {
+      const bg = base.stations.gunner || {};
+      const bv = bg.vision || null;
+      let src = st.vision === null ? null : st.vision || bv;
+      // the derived seated eye follows a gunner's eye the vehicle file moved
+      if (src && bv && finite3(src.eye) && finite3(bv.eye) && finite3(bg.eye)
+        && src.eye.every((x, i) => Math.abs(x - bv.eye[i]) < 1e-9) && !st.eye.every((x, i) => Math.abs(x - bg.eye[i]) < 1e-9)) {
+        src = { ...src, eye: [0, 1, 2].map((i) => st.eye[i] + (bv.eye[i] - bg.eye[i])) };
+      }
+      const v = src ? normStation('gunner_look', src, bv) : null;
+      if (v) v.hatch = null;
+      st.vision = v;
+    }
+    out.stations[key] = st;
   }
   if (!out.colors) out.colors = base.colors;
   else out.colors = { ...base.colors, ...out.colors };
@@ -161,7 +183,7 @@ const _p = new THREE.Vector3();
  *   dir, up   world view direction and up (the head stays upright in the hull)
  *   view      Matrix4: frame * eye * look (a periscope's window rides it)
  */
-export function stationPose(frameMatrix, st, yaw, pitch, hatchOpen, bob, out) {
+export function stationPose(frameMatrix, st, yaw, pitch, hatchOpen, bob, out, ext = null) {
   const hatch = hatchOpen && st.hatch ? st.hatch : null;
   const dv = st.device || {};
   const type = hatch ? 'hatch' : dv.type;
@@ -171,7 +193,18 @@ export function stationPose(frameMatrix, st, yaw, pitch, hatchOpen, bob, out) {
   const dirL = _d.set(0, 0, 1).applyQuaternion(_q);
   const eyeL = _e.fromArray(hatch ? hatch.eye : st.eye);
   const apL = _a.copy(eyeL);
-  if (type === 'periscope') {
+  if (type === 'periscope' && ext && ext.head) {
+    // the head the outside model draws (wave 7): the world is seen from
+    // just outside its window, so its own box never fills the view
+    apL.fromArray(ext.head);
+    apL.y += HEAD_UP;
+    apL.x += Math.sin(yaw) * HEAD_FWD;
+    apL.z += Math.cos(yaw) * HEAD_FWD;
+  } else if (type === 'periscope' && ext && ext.through > 0) {
+    // a sight through the armour (an MG ball's telescope): its objective
+    // sits just outside the plate, along the look
+    apL.addScaledVector(dirL, ext.through);
+  } else if (type === 'periscope') {
     const rise = Number.isFinite(dv.rise) ? dv.rise : 0.24;
     const fwd = Number.isFinite(dv.fwd) ? dv.fwd : 0.06;
     apL.x += Math.sin(yaw) * fwd;
@@ -188,7 +221,10 @@ export function stationPose(frameMatrix, st, yaw, pitch, hatchOpen, bob, out) {
     eyeL.z += cz * lean;
   } else if (type === 'slit') {
     const dist = Number.isFinite(dv.dist) ? dv.dist : 0.12;
-    apL.addScaledVector(dirL, dist + 0.1);
+    // through the plate: where the outside model's armour ends on the
+    // station's line of sight (wave 7: the IS-2's visor looked into its
+    // own cast nose), else the window plus 10 cm
+    apL.addScaledVector(dirL, ext && ext.through > 0 ? ext.through : dist + 0.1);
   }
   out.view.makeRotationFromQuaternion(_q).setPosition(eyeL);
   out.view.premultiply(frameMatrix);
@@ -205,10 +241,110 @@ export function stationPose(frameMatrix, st, yaw, pitch, hatchOpen, bob, out) {
 // the controller
 // ---------------------------------------------------------------------------
 const NEAR_STATION = 0.15;
+// a periscope head's window: the aperture sits this far out of its centre
+const HEAD_FWD = 0.1;
+// ...and this far over its centre, at its window (the box is ~8 cm tall)
+const HEAD_UP = 0.025;
+// the gunner's look-around toggle (core/input.js action table)
+export const KEY_GUNNER_VIEW = 'KeyE';
 const NEAR_HATCH = 0.1;
 const POS_SHAKE_STATION = 0.035;
 
 let lastController = null;
+
+// ---------------------------------------------------------------------------
+// where the OUTSIDE model puts a station's aperture (wave 7). The exterior
+// (vehicles/tanks.js) draws one driver's periscope head on the hull roof and
+// solid armour round every slit; a camera left behind the head or inside
+// the plate sees the tank's own paint fill the window. Measured once per
+// tank by casting rays at its own exterior meshes, in the station frame.
+// ---------------------------------------------------------------------------
+const _ray = new THREE.Raycaster();
+const _ro = new THREE.Vector3();
+const _rd = new THREE.Vector3();
+const _rm = new THREE.Matrix3();
+
+function exteriorMeshes(tank) {
+  const list = [];
+  if (!tank || !tank.group || typeof tank.group.traverse !== 'function') return list;
+  tank.group.traverse((o) => {
+    if (!o.isMesh || !o.visible || !o.geometry) return;
+    const m = o.material;
+    if (!m || m.colorWrite === false || m.visible === false) return;
+    if (o.name === 'contactShadow' || o.name === 'shadowProxy') return;
+    list.push(o);
+  });
+  return list;
+}
+
+// first hit of a ray given in the frame node's local space; returns the
+// local distance or -1
+function castLocal(node, meshes, from, dir, far) {
+  node.updateWorldMatrix(true, true);
+  const mw = node.matrixWorld;
+  _ro.fromArray(from).applyMatrix4(mw);
+  _rd.fromArray(dir).applyMatrix3(_rm.setFromMatrix4(mw));
+  const scale = _rd.length() || 1;
+  _rd.divideScalar(scale);
+  _ray.set(_ro, _rd);
+  _ray.near = 0;
+  _ray.far = far * scale;
+  let hits = [];
+  try {
+    hits = _ray.intersectObjects(meshes, false);
+  } catch (e) {
+    hits = [];
+  }
+  return hits.length ? hits[0].distance / scale : -1;
+}
+
+export function stationApertures(tank, def) {
+  const out = {};
+  if (!tank || !def || !def.stations) return out;
+  const meshes = exteriorMeshes(tank);
+  if (!meshes.length) return out;
+  const spec = tank.spec;
+  const roof = spec.hull.trackH + spec.hull.h;
+  const list = Object.entries(def.stations).map(([k, st]) => [k, st]);
+  const gv = def.stations.gunner && def.stations.gunner.vision;
+  if (gv) list.push(['gunner_look', gv]);
+  for (const [key, st] of list) {
+    const dv = st.device || {};
+    const node = st.frame === 'turret' && tank.turretGroup ? tank.turretGroup : tank.group;
+    const headAt = dv.type === 'periscope' && Array.isArray(dv.headAt) ? dv.headAt : null;
+    if ((key === 'driver' && dv.type === 'periscope' && dv.rise !== 0 && st.frame === 'hull') || headAt) {
+      // tanks.js: the driver's periscope box, centre (dx, deck + 0.04, dz),
+      // or the head a station names (device.headAt [x, z] in its frame)
+      const { w, len } = spec.hull;
+      const t = spec.turret;
+      const dz = headAt ? headAt[1] : Math.min(len * 0.5 - 0.55, t.offZ + t.len * 0.5 + 0.42);
+      const dx = headAt ? headAt[0] : spec.shape && spec.shape.driverRight ? -w * 0.2 : w * 0.2;
+      // its expected top: 8 cm over the deck / turret roof it stands on
+      const base = headAt ? st.eye[1] + (dv.rise || 0.25) + 0.04 : roof + 0.08;
+      const d = castLocal(node, meshes, [dx, base + 1.5, dz], [0, -1, 0], 2.5);
+      const top = d >= 0 ? base + 1.5 - d : NaN;
+      if (Number.isFinite(top) && Math.abs(top - base) < 0.3
+        && Math.hypot(dx - st.eye[0], dz - st.eye[2]) < 0.75) {
+        out[key] = { head: [dx, top - 0.04, dz] };
+      }
+    } else if (dv.type === 'slit' || (dv.type === 'periscope' && dv.rise === 0)) {
+      // along the station's own forward line of sight, from outside in
+      const y0 = st.look ? st.look[0] || 0 : 0;
+      const f = [Math.sin(y0), 0, Math.cos(y0)];
+      const R = 2.5;
+      const from = [st.eye[0] + f[0] * R, st.eye[1], st.eye[2] + f[2] * R];
+      const d = castLocal(node, meshes, from, [-f[0], 0, -f[2]], R);
+      if (d >= 0) {
+        const thick = R - d;
+        // an MG ball's telescope (a periscope with rise 0) looks past the
+        // ball and the barrel stub in front of it, not into them
+        const extra = dv.type === 'periscope' ? 0.35 : 0.035;
+        if (thick > 0.04 && thick < 1.5) out[key] = { through: thick + extra };
+      }
+    }
+  }
+  return out;
+}
 
 export function stationsFor(battle) {
   if (!battle) return null;
@@ -230,9 +366,9 @@ function stationPref() {
   if (!v) return null;
   if (typeof v === 'string') {
     const [station, mod] = v.split(':');
-    return { station, hatch: mod === 'hatch' };
+    return { station, hatch: mod === 'hatch', look: mod === 'look' };
   }
-  return typeof v === 'object' && v.station ? { station: String(v.station), hatch: !!v.hatch } : null;
+  return typeof v === 'object' && v.station ? { station: String(v.station), hatch: !!v.hatch, look: !!v.look } : null;
 }
 
 export class TankStations {
@@ -243,6 +379,10 @@ export class TankStations {
     this.layer = null;
     this.station = null; // null = third person
     this.hatch = false;
+    // in the gunner's station: false = the sight (H-02 sniper view), true =
+    // his look-around view (his vision device / seated in the turret)
+    this.gunnerLook = false;
+    this._ext = {};
     this.yaw = 0;
     this.pitch = 0;
     this.viewing = false;
@@ -274,7 +414,16 @@ export class TankStations {
     this.def = tank && tank.spec ? resolveTankInterior(tank.spec) : null;
     this.station = null;
     this.hatch = false;
+    this.gunnerLook = false;
     this._crewSeen = tank && tank.crewAlive ? { ...tank.crewAlive } : null;
+    this._ext = {};
+    if (tank && this.def) {
+      try {
+        this._ext = stationApertures(tank, this.def);
+      } catch (e) {
+        this._ext = {};
+      }
+    }
     if (tank) {
       tank.onInteriorEvent = (type, a, b) => {
         if (this.layer && this.viewing) this.layer.onEvent(type, a, b);
@@ -285,6 +434,7 @@ export class TankStations {
         this.hatch = pref.hatch && !!this.def.stations[pref.station].hatch;
       } else if (pref && pref.station === 'gunner') {
         this.enter('gunner');
+        if (pref.look) this.lookAround(true);
       }
     }
   }
@@ -308,6 +458,7 @@ export class TankStations {
     if (!this.available(role)) return false;
     this.station = role;
     this.hatch = false;
+    this.gunnerLook = false;
     if (role === 'gunner') {
       b.sniper = true;
       return true;
@@ -319,15 +470,48 @@ export class TankStations {
     return true;
   }
 
+  // the station definition in use (the gunner's look-around view is a
+  // station of its own, stations.gunner.vision)
+  current() {
+    if (!this.def || !this.station) return null;
+    const st = this.def.stations[this.station];
+    if (this.station === 'gunner' && this.gunnerLook) return (st && st.vision) || null;
+    return st || null;
+  }
+
+  // the key the layer files the active device under
+  currentKey() {
+    return this.station === 'gunner' && this.gunnerLook ? 'gunner_look' : this.station;
+  }
+
+  // gunner: sight <-> look-around (on = true / false; omitted = toggle)
+  lookAround(on) {
+    const b = this.battle;
+    if (this.station !== 'gunner') return false;
+    const st = this.def.stations.gunner;
+    const want = on == null ? !this.gunnerLook : !!on;
+    if (want && !(st && st.vision)) return false;
+    this.gunnerLook = want;
+    b.sniper = !want;
+    if (want) {
+      this.yaw = st.vision.look[0] || 0;
+      this.pitch = st.vision.look[1] || 0;
+    }
+    return true;
+  }
+
   exit() {
     this.station = null;
     this.hatch = false;
+    this.gunnerLook = false;
     if (this.battle.sniper) this.battle.sniper = false;
     return true;
   }
 
   // Next station in the cycle; past the last one, back to third person.
   cycle() {
+    // the gunner's sight steps on to his look-around view first
+    if (this.station === 'gunner' && !this.gunnerLook && this.lookAround(true)) return true;
     const list = this.stations();
     if (!list.length) return this.exit();
     const i = this.station ? list.indexOf(this.station) : -1;
@@ -351,10 +535,15 @@ export class TankStations {
     const p = b.player;
     if (p !== this.tank) this.attach(p);
     if (!p || p.alive === false) return;
-    // the gunner's seat is the sniper view, whoever toggled it
-    if (b.sniper && this.station !== 'gunner') this.station = 'gunner';
-    else if (!b.sniper && this.station === 'gunner') this.station = null;
+    // the gunner's seat is the sniper view, whoever toggled it (Shift in
+    // the look-around view goes back to the sight)
+    if (b.sniper && this.station !== 'gunner') {
+      this.station = 'gunner';
+      this.gunnerLook = false;
+    } else if (b.sniper && this.gunnerLook) this.gunnerLook = false;
+    else if (!b.sniper && this.station === 'gunner' && !this.gunnerLook) this.station = null;
     if (input.pressed('KeyC')) this.cycle();
+    if (input.pressed(KEY_GUNNER_VIEW) && this.station === 'gunner') this.lookAround();
     if (input.pressed('KeyX') && this.station) this.exit();
     // a crewman down: his seat is gone
     if (this.station && !this.available(this.station)) {
@@ -365,8 +554,9 @@ export class TankStations {
       else this.exit();
     }
     this._pollCrew();
-    if (!this.station || this.station === 'gunner') return;
-    const st = this.def.stations[this.station];
+    if (!this.station || (this.station === 'gunner' && !this.gunnerLook)) return;
+    const st = this.current();
+    if (!st) return;
     const hatch = this.hatch && st.hatch;
     const lim = hatch ? st.hatch.limits : st.limits;
     const sens = 0.0022 * (this.fov / 60);
@@ -413,7 +603,9 @@ export class TankStations {
     const b = this.battle;
     if (tank && tank !== this.tank) this.attach(tank);
     if (b.sniper && this.station && this.station !== 'gunner') this.station = 'gunner';
-    const v = !!(tank && tank.alive !== false && this.def && this.station && this.station !== 'gunner'
+    if (b.sniper && this.gunnerLook) this.gunnerLook = false;
+    const v = !!(tank && tank.alive !== false && this.def && this.station
+      && (this.station !== 'gunner' || this.gunnerLook) && this.current()
       && !b.sniper && !b.spectate && !b.finished);
     if (!v && this.viewing) this._leave();
     this.viewing = v;
@@ -441,8 +633,9 @@ export class TankStations {
    * interior around it. Returns the field of view the battle eases to.
    */
   placeCamera(camera, tank, dt) {
-    const st = this.def.stations[this.station];
+    const st = this.current();
     if (!st) return 60;
+    const key = this.currentKey();
     const hatch = this.hatch && st.hatch;
     // the head rides the hull: a little bob with speed and pitching
     this._bobT += dt;
@@ -451,7 +644,7 @@ export class TankStations {
     this._bob.set(Math.sin(this._bobT * 7.3) * a * 0.6, Math.sin(this._bobT * 11.1 + 0.7) * a, 0);
     const frameNode = st.frame === 'turret' && tank.turretGroup ? tank.turretGroup : tank.group;
     frameNode.updateWorldMatrix(true, false);
-    const pose = stationPose(frameNode.matrixWorld, st, this.yaw, this.pitch, hatch, this._bob, this._pose);
+    const pose = stationPose(frameNode.matrixWorld, st, this.yaw, this.pitch, hatch, this._bob, this._pose, this._ext[key] || null);
     camera.position.copy(pose.aperture);
     camera.up.copy(pose.up);
     camera.lookAt(_p.copy(pose.aperture).addScaledVector(pose.dir, 100));
@@ -477,7 +670,11 @@ export class TankStations {
       this.layer.setVisible(true);
       this._offset.copy(pose.aperture).sub(pose.eye);
       if (typeof window !== 'undefined' && window.innerHeight) this.layer.setPixelHeight(window.innerHeight);
-      this.layer.update(dt, { key: this.station, station: st, offset: this._offset, viewMatrix: pose.view });
+      const r = this.battle.renderer;
+      this.layer.update(dt, {
+        key, station: st, offset: this._offset, viewMatrix: pose.view,
+        fov: this.fov, aspect: camera.aspect, exposure: r && Number.isFinite(r.toneMappingExposure) ? r.toneMappingExposure : 1.1,
+      });
     }
     this.layerMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0;
     return this.fov;
@@ -485,9 +682,23 @@ export class TankStations {
 
   // ---- the little station tag and the touch button's lit state
   _syncTag() {
-    const key = this.viewing ? `${this.station}|${this.hatch ? 1 : 0}` : '';
+    // shown at every station, the gunner's sight too (its hint is the
+    // look-around key)
+    const sight = !this.viewing && this.station === 'gunner' && this.battle.sniper && !this.battle.spectate;
+    const tid = this.tank && this.tank.spec ? this.tank.spec.id : '';
+    const key = this.viewing ? `${tid}|${this.station}|${this.hatch ? 1 : 0}|${this.gunnerLook ? 1 : 0}` : sight ? `${tid}|gunner|sight` : '';
     if (key === this._tagKey) return;
     this._tagKey = key;
+    // the HUD steps aside while a station view is up (markers hidden, damage
+    // panel dimmed; ui/hud.js setCrewStation)
+    const hud = this.battle && this.battle.hud;
+    if (hud && typeof hud.setCrewStation === 'function') {
+      try {
+        hud.setCrewStation(this.viewing);
+      } catch (e) {
+        /* a stub HUD */
+      }
+    }
     if (typeof document === 'undefined' || !document.createElement) return;
     if (!this._tag) {
       const host = document.getElementById ? document.getElementById('app') : null;
@@ -502,11 +713,14 @@ export class TankStations {
     if (!key) {
       el.classList.add('hidden');
     } else {
-      const st = this.def.stations[this.station];
-      const dev = this.hatch && st.hatch ? 'hatch' : st.device.type;
-      const hint = st.hatch ? ` · Scroll — ${this.hatch ? 'button up' : 'hatch'}` : '';
-      el.innerHTML = `<b>${STATION_LABEL[this.station] || this.station}</b><span>${DEVICE_LABEL[dev] || ''}</span>` +
-        `<i>C — next · X — third person${hint}</i>`;
+      const st = sight ? this.def.stations.gunner : this.current();
+      const dev = sight ? 'sight' : this.hatch && st.hatch ? 'hatch' : st.device.type;
+      const hint = !sight && st.hatch ? ` · Scroll — ${this.hatch ? 'button up' : 'hatch'}` : '';
+      const look = this.station === 'gunner' && this.def.stations.gunner && this.def.stations.gunner.vision
+        ? `E — ${sight ? 'look around' : 'sight'} · ` : '';
+      const label = this.station === 'gunner' && this.gunnerLook && st.device.type === 'none' ? 'SEAT VIEW' : DEVICE_LABEL[dev] || '';
+      el.innerHTML = `<b>${STATION_LABEL[this.station] || this.station}</b><span>${label}</span>` +
+        `<i>${look}C — next · X — third person${hint}</i>`;
       el.classList.remove('hidden');
     }
     try {
@@ -524,6 +738,8 @@ export class TankStations {
       source: this.def ? this.def.source : null,
       station: this.station,
       hatch: this.hatch,
+      gunnerLook: this.gunnerLook,
+      apertures: this._ext,
       viewing: this.viewing,
       yaw: this.yaw,
       pitch: this.pitch,
@@ -539,6 +755,14 @@ export class TankStations {
     if (this.layer) this.layer.dispose();
     this.layer = null;
     if (this._tag) this._tag.classList.add('hidden');
+    const hud = this.battle && this.battle.hud;
+    if (hud && typeof hud.setCrewStation === 'function') {
+      try {
+        hud.setCrewStation(false);
+      } catch (e) {
+        /* a stub HUD */
+      }
+    }
   }
 }
 
@@ -569,6 +793,14 @@ try {
       const ok = c.enter(role);
       if (ok && hatch && c.def.stations[role] && c.def.stations[role].hatch) c.hatch = true;
       return ok;
+    },
+    // the gunner's look-around view (true) / sight (false); omitted: toggle
+    look(on) {
+      const c = lastController;
+      if (!c) return false;
+      if (c.battle.player !== c.tank) c.attach(c.battle.player);
+      if (c.station !== 'gunner') c.enter('gunner');
+      return c.lookAround(on);
     },
     cycle() {
       return lastController ? lastController.cycle() : false;

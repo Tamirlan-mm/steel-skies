@@ -43,13 +43,20 @@ export default defineTankInterior('panther', (spec, base) => {
   // 80 mm at 55 degrees puts its INSIDE face 0.14 m further back
   const glacisTopZ = 1.87;
   // the upper sides lean in at 30 degrees: 1.09 m half-width at the roof,
-  // 1.55 at the sponson shelf; the room is one width, so take the middle
-  const halfWidth = 1.4;
+  // 1.55 at the sponson shelf (wave 7: the framework's roofHalfWidth draws
+  // the slope; it used to be one 1.40 m width top to bottom)
+  const halfWidth = 1.55;
+  const roofHalfWidth = 1.09;
 
-  // driver / bow gunner: heads under the roof, just behind the glacis top
-  const drv = [0.81, roofY - 0.16, 1.68];
-  const bow = [-0.85, roofY - 0.16, 1.68];
-  const periscope = (e) => ({ type: 'periscope', w: 0.15, h: 0.045, dist: 0.1, rise: roof + 0.1 - e[1], fwd: 0.05 });
+  // driver / bow gunner: heads under the roof, just behind the glacis top,
+  // over the damage model's crew_driver / crew_radio boxes (z 1.76..2.36 /
+  // 1.62..2.22: wave 7 moved them forward 0.18 / 0.12 m onto the boxes;
+  // the glacis' inside face is at z 2.11 at eye height)
+  const drv = [0.81, roofY - 0.16, 1.86];
+  const bow = [-0.85, roofY - 0.16, 1.8];
+  // the window spans ~56 degrees (wave 7: 0.15 m at 0.10 m was 74 degrees,
+  // wider than a 4:3 screen); the framework also fits it to the screen
+  const periscope = (e) => ({ type: 'periscope', w: 0.105, h: 0.04, dist: 0.1, rise: roof + 0.1 - e[1], fwd: 0.05 });
 
   // gunner's eye at the TZF 12a eyepiece, left of the gun and beside the
   // breech ring (the sight's aperture is left of the bore in the mantlet)
@@ -80,6 +87,9 @@ export default defineTankInterior('panther', (spec, base) => {
         // the eyepiece and the bracket it hangs from (the view is H-02's)
         device: { type: 'sight', w: 0.05, h: 0.05, dist: 0.06 },
         seat: [0.46, -0.08, -0.02],
+        // the Ausf. G gunner has only the TZF 12a: his look-around is his
+        // seat in the turret, head back off the eyepiece (wave 7)
+        vision: { eye: [gEye[0] + 0.03, gEye[1] + 0.09, gEye[2] - 0.3], look: [0, -0.1], device: { type: 'none' }, limits: { yaw: [-2.0, 2.0], pitch: [-0.9, 0.7] }, fov: 72 },
       },
       loader: {
         frame: 'turret',
@@ -97,7 +107,7 @@ export default defineTankInterior('panther', (spec, base) => {
         device: periscope(drv),
         limits: { yaw: [-1.4, 1.4], pitch: [-0.2, 0.25] },
         hatch: { eye: [drv[0], roof + 0.62, drv[2] - 0.2] },
-        seat: [drv[0], 1.24, drv[2] - 0.12],
+        seat: [drv[0], 1.24, drv[2] + 0.02],
       },
       radio: {
         frame: 'hull',
@@ -107,7 +117,7 @@ export default defineTankInterior('panther', (spec, base) => {
         device: periscope(bow),
         limits: { yaw: [-0.6, 0.6], pitch: [-0.2, 0.25] },
         hatch: { eye: [bow[0], roof + 0.62, bow[2] - 0.2] },
-        seat: [bow[0], 1.24, bow[2] - 0.12],
+        seat: [bow[0], 1.24, bow[2] + 0.02],
       },
     },
     breech: {
@@ -121,7 +131,7 @@ export default defineTankInterior('panther', (spec, base) => {
       caseLength: 0.64,
     },
     layout: {
-      hull: { halfWidth, glacisTopZ, lowFrontY: 0.97, frontZ: 3.27 },
+      hull: { halfWidth, roofHalfWidth, glacisTopZ, lowFrontY: 0.97, frontZ: 3.27 },
       // inside the welded turret: 0.95 ahead of the ring to 1.39 behind it,
       // ~1.9 m across at shoulder height; the 1.65 m ring; the platform hung
       // above the floor stowage and the shaft

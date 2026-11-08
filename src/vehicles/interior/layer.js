@@ -29,6 +29,15 @@ const tmpQ = new THREE.Quaternion();
 const IDENT = new THREE.Matrix4();
 const MAX_CASES = 6;
 const MAX_SPARKS = 48;
+// lid underside / hatch handle above the eye under it (m)
+const LID_CLEAR = 0.05;
+// the share of the screen's half-width / half-height a periscope or slit
+// window (with its bezel) may span: the rest is the frame of interior
+// around it, on any aspect (wave 7: 74-degree windows overflowed 4:3)
+const FIT_H = 0.84;
+const FIT_V = 0.8;
+// the exposure the compartment is graded for (the renderer's is divided out)
+const INTERIOR_EXPOSURE = 0.62;
 
 // reload progress u (0 just fired .. 1 ready) -> what the breech is doing
 //   [0, OPEN)        counter-recoil; the semi-automatic breech flies open
@@ -111,6 +120,7 @@ export class InteriorLayer {
     this.offset = new THREE.Vector3();
     this.frames = {};
     this.devices = new Map(); // station key -> { group, frame }
+    this.housings = {}; // station key -> its static housing meshes (seen from elsewhere)
     this.activeDevice = null;
     this.cases = [];
     this.caseNext = 0;
@@ -166,13 +176,17 @@ export class InteriorLayer {
     // ---- hull room
     const H = L.hull;
     const hb = B.hull;
+    // roofHalfWidth (optional): the upper side plates lean in from the
+    // sponson shelf to the roof (Panther, SU-100 ...); without it the room
+    // is one width top to bottom, as before
+    const hwTop = Number.isFinite(H.roofHalfWidth) ? H.roofHalfWidth : null;
     hb.insideProfile([
       [H.floorY, H.rearZ],
       [H.roofY, H.rearZ],
       [H.roofY, H.glacisTopZ],
       [H.lowFrontY, H.frontZ],
       [H.floorY + 0.1, H.frontZ - 0.12],
-    ], H.halfWidth, col.wall, col.wall);
+    ], H.halfWidth, col.wall, col.wall, hwTop != null ? { yKnee: H.sponsonY, hwTop, yTop: H.roofY } : null);
     // the floor plate, darker, a hair above the room's own floor
     hb.box(0, H.floorY + 0.006, (H.rearZ + H.frontZ) / 2, H.lowerHalfWidth * 2, 0.012, H.frontZ - H.rearZ - 0.2, col.floor);
     // the track runs: lower walls and the sponson shelves above them
@@ -207,16 +221,25 @@ export class InteriorLayer {
     // ---- hatches (closed lids from inside) and the cupola
     for (const h of L.hatches || []) {
       const b = bOf(h.frame);
-      b.cyl(h.pos[0], h.pos[1] - 0.012, h.pos[2], h.r, 0.024, col.metal, { seg: 14 });
-      b.bar([h.pos[0] - h.r * 0.5, h.pos[1] - 0.06, h.pos[2]], [h.pos[0] + h.r * 0.5, h.pos[1] - 0.06, h.pos[2]], 0.025, col.dark);
+      // the lid's underside (and the handle bar under it) stays a hand's
+      // breadth above the eye of the station seated under it: a lid inside
+      // the layer's 3 cm near plane is clipped open (wave 7: the Panther's
+      // was 1.7 cm, the Sherman's 1 cm above the commander's eye)
+      let lidY = h.pos[1];
+      const st = h.cupola ? def.stations.commander : null;
+      if (st && st.frame === h.frame && Math.hypot(st.eye[0] - h.pos[0], st.eye[2] - h.pos[2]) < h.r + 0.1) {
+        lidY = Math.max(lidY, st.eye[1] + LID_CLEAR + 0.024 + 0.035);
+      }
+      b.cyl(h.pos[0], lidY - 0.012, h.pos[2], h.r, 0.024, col.metal, { seg: 14 });
+      b.bar([h.pos[0] - h.r * 0.5, lidY - 0.024 - 0.0125 - 0.01, h.pos[2]], [h.pos[0] + h.r * 0.5, lidY - 0.024 - 0.0125 - 0.01, h.pos[2]], 0.025, col.dark);
       if (h.cupola) {
         const cu = h.cupola;
         // the cupola wall sits just behind the block windows (index.js puts
         // the block holes at the device radius)
-        const st = def.stations.commander;
         const dv = st && st.device && st.device.type === 'blocks' ? st.device : null;
         const rWall = dv ? dv.radius + 0.012 : cu.r * 0.95;
-        b.cyl(h.pos[0], (cu.y0 + cu.y1) / 2, h.pos[2], rWall, cu.y1 - cu.y0, col.wall, { seg: 16, caps: false, inside: true });
+        const y1 = Math.max(cu.y1, lidY);
+        b.cyl(h.pos[0], (cu.y0 + y1) / 2, h.pos[2], rWall, y1 - cu.y0, col.wall, { seg: 16, caps: false, inside: true });
         if (dv) this._blockGlass(gOf(h.frame), st, dv, 0.006);
       }
     }
@@ -234,7 +257,7 @@ export class InteriorLayer {
       // housings of the station's own device (the window itself is built by
       // _device while the station is in use; glass glows otherwise)
       const dv = st.device || {};
-      if (dv.type === 'periscope' || dv.type === 'sight') this._periscopeHousing(b, gOf(st.frame), st, dv);
+      if (dv.type === 'periscope' || dv.type === 'sight') this._housing(key, st, dv);
       if (key === 'driver') {
         // steering levers, a gear lever and the instrument box
         for (const s of [-1, 1]) {
@@ -247,8 +270,10 @@ export class InteriorLayer {
         for (const s of [-1, 0, 1]) b.box(x + s * 0.13, H.floorY + 0.08, z + 0.62, 0.07, 0.04, 0.12, col.dark);
       }
     }
-    // the station devices that are fixed glass anywhere (vision blocks are
-    // done with the cupola, periscopes with their housings)
+    // the gunner's own vision device (the look-around view beside his
+    // sight): its housing, like any other station's
+    const gv = def.stations.gunner && def.stations.gunner.vision;
+    if (gv && gv.device && gv.device.type === 'periscope') this._housing('gunner_look', gv, gv.device);
 
     // ---- racks with rounds
     for (const r of L.racks || []) this._rack(bOf(r.frame), r);
@@ -357,13 +382,27 @@ export class InteriorLayer {
     }
   }
 
-  // periscope / sight housing down from the roof, and its glowing eyepiece
+  // A periscope / sight housing down from the roof and its glowing
+  // eyepiece, as seen from the OTHER stations: its own meshes in the station
+  // frame, hidden while that station is in use (wave 7: the static housing
+  // stood in front of a periscope window that turns with the look, and
+  // filled a third of the Panther driver's screen at yaw). The station's
+  // own housing then rides the look with its window (device()).
+  _housing(key, st, dv) {
+    const b = new GeoBuilder();
+    const g = new GeoBuilder();
+    this._periscopeHousing(b, g, st, dv);
+    const fr = this.frames[st.frame === 'turret' && this.frames.turret ? 'turret' : 'hull'];
+    const ms = [this._add(fr, b, this.mats.lit), this._add(fr, g, this.mats.glow)].filter(Boolean);
+    this.housings[key] = ms;
+  }
+
   _periscopeHousing(b, g, st, dv) {
     const col = this.col;
     const [x, y, z] = st.eye;
     const d = { ...DEVICE_DEFAULTS.periscope, ...dv };
     const wz = z + (d.dist || 0.07);
-    const top = st.frame === 'hull' ? this.def.layout.hull.roofY : (this.def.layout.turret ? this.def.layout.turret.y1 : y + 0.2);
+    const top = this._roofOver(st);
     const hgt = Math.max(0.06, top - (y - d.h / 2 - 0.03));
     // the body stands BEHIND the eyepiece plane: anything nearer the eye
     // than the window would cover the hole the station view stamps there
@@ -375,6 +414,13 @@ export class InteriorLayer {
     g.pushTR([x, y, wz + 0.004]);
     g.rect(d.w, d.h, lin(this.def.colors.glass));
     g.pop();
+  }
+
+  // the roof over a station's eye, in its own frame
+  _roofOver(st) {
+    const L = this.def.layout;
+    if (st.frame === 'hull') return L.hull.roofY;
+    return L.turret ? L.turret.y1 : st.eye[1] + 0.2;
   }
 
   // the vision blocks' glass, glowing, `back` m behind the window plane
@@ -528,6 +574,15 @@ export class InteriorLayer {
       bez.frame(d.w, d.h, d.bezel, d.depth, this.col.dark, d.dist);
       // the housing face around the bezel, wide enough to frame the view
       bez.frame(d.w + d.bezel * 2, d.h + d.bezel * 2, 0.08, 0.012, this.col.metal, d.dist + 0.006);
+      if (type === 'periscope') {
+        // the periscope's own body, turning with it: behind the window
+        // plane, up into the roof (the static copy other stations see is
+        // hidden while this one is in use)
+        const up = Math.max(0.08, this._roofOver(st) - st.eye[1] + 0.06);
+        bez.box(0, (up - d.h / 2 - 0.03) / 2, d.dist + 0.06, d.w + d.bezel * 2 + 0.16, up + d.h / 2 + 0.03, 0.09, this.col.metal);
+        // (no brow pad on the turning copy: in front of the window plane it
+        // ate into the view in the browser — the bezel frames it instead)
+      }
       group.add(layerMesh(hole.build(), this.mats.hole, ORDER_HOLE));
       group.add(layerMesh(glass.build(), this.mats.glass, ORDER_GLASS));
       group.add(layerMesh(bez.build(), this.mats.lit, ORDER_BODY));
@@ -596,7 +651,20 @@ export class InteriorLayer {
       this.activeDevice = dev;
       if (dev.group) dev.group.visible = true;
     }
-    if (dev.view && dev.group) dev.group.matrix.multiplyMatrices(tmpM, view.viewMatrix);
+    // the station's own static housing is replaced by the one that turns
+    if (this._housingHidden !== view.key) {
+      for (const [k, ms] of Object.entries(this.housings)) for (const m of ms) m.visible = k !== view.key;
+      this._housingHidden = view.key;
+    }
+    // the window (and its bezel) fitted inside the screen at this aspect
+    // and field of view, so interior always frames it
+    const fit = this._fit(dev, view);
+    if (dev.view && dev.group) {
+      dev.group.matrix.multiplyMatrices(tmpM, view.viewMatrix);
+      if (fit) dev.group.matrix.multiply(tmpM2.makeScale(fit[0], fit[1], 1));
+    } else if (dev.group && dev.type === 'slit' && fit) {
+      dev.group.scale.set(fit[0], fit[1], 1);
+    }
 
     this._animateBreech(dt);
     this._animateCases(dt);
@@ -606,6 +674,22 @@ export class InteriorLayer {
     for (const k of Object.keys(this.frames)) this.frames[k].matrixWorldNeedsUpdate = true;
     if (dev.view && dev.group) dev.group.matrixWorldNeedsUpdate = true;
     this.root.updateMatrixWorld(true);
+  }
+
+  // [sx, sy] that keep a periscope / slit window and its bezel inside
+  // FIT_H / FIT_V of the screen's half extents (null: nothing to fit)
+  _fit(dev, view) {
+    if (!dev || !dev.d || (dev.type !== 'periscope' && dev.type !== 'slit')) return null;
+    const d = dev.d;
+    const fov = Number.isFinite(view.fov) ? view.fov : 55;
+    const aspect = Number.isFinite(view.aspect) && view.aspect > 0 ? view.aspect : 16 / 9;
+    const tv = Math.tan((fov * Math.PI) / 360);
+    const th = tv * aspect;
+    const dist = d.dist > 0.01 ? d.dist : 0.07;
+    const bz = Number.isFinite(d.bezel) ? d.bezel : 0.014;
+    const tx = (d.w / 2 + bz) / dist;
+    const ty = (d.h / 2 + bz) / dist;
+    return [Math.min(1, (FIT_H * th) / tx), Math.min(1, (FIT_V * tv) / ty)];
   }
 
   _strokeOf() {
@@ -793,11 +877,32 @@ export class InteriorLayer {
     // cupola blocks / periscopes overhead)
     const st = view.station;
     const sf = this.frames[st.frame === 'turret' && this.frames.turret ? 'turret' : 'hull'];
-    u.uLampPos.value[1].set(st.eye[0], st.eye[1] + 0.12, st.eye[2] + 0.12).applyMatrix4(sf.matrix);
+    const dev = this.activeDevice;
     const sky = this.day.skyCol;
-    const kd = 0.35 * day;
-    u.uLampCol.value[1].set(sky[0] * kd + 0.05 * day, sky[1] * kd + 0.05 * day, sky[2] * kd + 0.05 * day);
-    u.uLampR.value[1] = 0.55;
+    let kd = 0.35 * day;
+    let lampR = 0.55;
+    if (dev && dev.view && dev.group && dev.d) {
+      // a periscope: the light comes in through its window, so the lamp
+      // rides it, between the eye and the eyepiece (the bezel and the brow
+      // read instead of a black frame round the view)
+      u.uLampPos.value[1].set(0, 0.01, dev.d.dist * 0.45).applyMatrix4(dev.group.matrix);
+      kd = 2.2 * day;
+      lampR = 0.35;
+    } else if (dev && dev.type === 'slit' && dev.d) {
+      u.uLampPos.value[1].set(st.eye[0], st.eye[1] + 0.01, st.eye[2] + dev.d.dist * 0.45).applyMatrix4(sf.matrix);
+      kd = 2.2 * day;
+      lampR = 0.35;
+    } else {
+      u.uLampPos.value[1].set(st.eye[0], st.eye[1] + 0.12, st.eye[2] + 0.12).applyMatrix4(sf.matrix);
+    }
+    const kw = 0.05 * day * (lampR < 0.5 ? 5 : 1);
+    u.uLampCol.value[1].set(sky[0] * kd + kw, sky[1] * kd + kw, sky[2] * kd + kw);
+    u.uLampR.value[1] = lampR;
+    // the eye inside adapts to the compartment: the renderer's exposure is
+    // solved for the world outside (a noon grey card), so most of it is
+    // divided back out here (wave 7: the ivory walls washed out at noon)
+    const ex = Number.isFinite(view.exposure) && view.exposure > 0 ? view.exposure : 1.1;
+    u.uExpo.value = Math.min(1.25, Math.max(0.35, Math.pow(INTERIOR_EXPOSURE / ex, 0.85)));
     // the gun / fire glow
     let g = 0;
     if (fx.gunFlash > 0) {

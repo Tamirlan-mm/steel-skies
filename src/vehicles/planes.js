@@ -409,7 +409,8 @@ export const PLANE_SPECS = {
         [-1.20, 0.40, 0.475, 0.06, 2.0], [-2.60, 0.26, 0.34, 0.10, 2.0],
         [-4.05, 0.08, 0.16, 0.14, 2.0], [-4.55, 0.05, 0.12, 0.15, 2.0],
       ],
-      // a low framed sliding hood set well FORWARD, ~0.30 m proud of the deck.
+      // a low sliding hood set well FORWARD, ~0.30 m proud of the deck: one
+      // blown moulding, no hoop overhead, only its rear frame (canopyHoops).
       // It is emphatically not the Mustang's bubble.
       canopy: {
         z: 0.35, y: 0.55, tubBack: -0.45, flatScreen: true,
@@ -997,6 +998,9 @@ export const PLANE_SPECS = {
       ],
       canopy: {
         z: 0.20, y: 0.53, tubBack: -0.45, flatScreen: true,
+        // bows: windscreen rear, the sliding hood's rear (over the fixed
+        // fairing) and the fixed rear glazing's end; nothing over the pilot
+        hoops: [1, 3, 4],
         glass: [[
           [1.05, 0.19, 0.09, 0.57], [0.75, 0.32, 0.21, 0.55], [0.20, 0.35, 0.25, 0.53],
           [-0.40, 0.32, 0.22, 0.51], [-0.95, 0.16, 0.08, 0.43],
@@ -1959,6 +1963,24 @@ function fuselageSections(spec) {
 // tall pilot hood, bare turtledeck and lower gunner station are three separate
 // lofts at three different heights, which is the whole shape. `deck` is solid
 // skin, not glass, and goes into the body bin.
+//
+// `hoops`: which sections of each glazed volume carry a framing hoop; null =
+// every one (a framed hood, a greenhouse, the Il-2). A bubble canopy
+// (look.canopy 'bubble': P-51D, Fw 190 A, Yak-3) is ONE blown moulding with
+// NO hoop overhead: its bows are the windscreen's rear frame (section 1;
+// section 0, the screen's foot, is the flat armoured panel) and the hood's
+// rear frame behind the head (the last section) — the same bows the
+// cockpit files (vehicles/cockpit/p51|fw190|yak3.js) draw from the seat.
+// shape.canopy.hoops = [indices] overrides it per type (the Yak-3).
+function canopyHoops(spec, own) {
+  if (Array.isArray(own)) return own.filter((i) => Number.isInteger(i));
+  const look = spec.look || {};
+  if (look.canopy !== 'bubble') return null;
+  const c = spec.shape && spec.shape.canopy;
+  const n = c && c.glass ? c.glass[0].length : 4;
+  return [1, n - 1];
+}
+
 function canopySections(spec) {
   const shape = spec.shape || {};
   if (shape.canopy && shape.canopy.glass) {
@@ -1975,6 +1997,7 @@ function canopySections(spec) {
       flatScreen: !!c.flatScreen,
       tubBack: c.tubBack,
       gunnerZ: c.gunnerZ,
+      hoops: canopyHoops(spec, c.hoops),
       sections: first,
     };
   }
@@ -1991,6 +2014,7 @@ function canopySections(spec) {
     glass: [sections],
     deck: null,
     flatScreen: false,
+    hoops: canopyHoops(spec, null),
     sections,
   });
   if (look.canopy === 'bubble') {
@@ -2651,6 +2675,8 @@ function buildPlaneGeometry(spec) {
       // the frontmost hoop is redundant on a type whose windscreen is a flat
       // armoured panel — the panel is the frame there
       if (i === 0 && canopy.flatScreen) continue;
+      // a bubble hood: only the bows it really has (canopyHoops)
+      if (canopy.hoops && !canopy.hoops.includes(i)) continue;
       const s = volume[i];
       add(bins.body, hoopXY(s[1] * 1.03, s[2] * 1.03, 0.028, s[3] != null ? s[3] : cy, s[0], 10));
     }

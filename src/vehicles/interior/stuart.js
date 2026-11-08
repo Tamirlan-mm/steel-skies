@@ -1,4 +1,5 @@
 import { defineTankInterior } from './registry.js';
+import { gunnerPeriscope } from './stations.js';
 
 // INTERIOR: M3 Stuart, late M3 with the welded horseshoe turret and the
 // hexagonal cupola, 37 mm Gun M6 in Mount M23 with the Westinghouse
@@ -117,6 +118,9 @@ export default defineTankInterior('stuart', (spec, base) => {
         eye: [0.3, 0.34, 0.16],
         device: { type: 'sight', w: 0.08, h: 0.05, dist: 0.07 },
         seat: [0.3, 0.04, -0.08],
+        // the M4 periscope (with the M40 telescope) in the roof ahead of
+        // him: its unity window is his look-out (wave 7)
+        vision: gunnerPeriscope(spec, [0.3, 0.34, 0.16], { yaw: [-0.3, 0.3], drop: 0.2 }),
       },
       loader: {
         frame: 'turret',

@@ -1,4 +1,5 @@
 import { defineTankInterior } from './registry.js';
+import { gunnerPeriscope } from './stations.js';
 
 // Cromwell Mk IV (A27M, 75 mm OQF Mk V), as fought in NW Europe 1944.
 //
@@ -76,6 +77,8 @@ export default defineTankInterior('cromwell', (spec, base) => {
         eye: [-0.33, gm.y + 0.03, breechZ + 0.05],
         device: { type: 'sight', w: 0.07, h: 0.07, dist: 0.06 },
         seat: [-0.4, -0.2, breechZ - 0.2],
+        // the Vickers Tank Periscope in the roof over him (wave 7)
+        vision: gunnerPeriscope(spec, [-0.33, gm.y + 0.03, breechZ + 0.05], { yaw: [-0.6, 0.6] }),
       },
       loader: {
         frame: 'turret',

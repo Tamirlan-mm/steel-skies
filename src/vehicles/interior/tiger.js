@@ -149,6 +149,10 @@ export default defineTankInterior('tiger', (spec, base) => {
         // the TZF 9b eyepiece and its bracket (the view is H-02's)
         device: { type: 'sight', w: 0.1, h: 0.045, dist: 0.06 },
         seat: [0.46, -0.03, -0.02],
+        // the mid-production Tiger's gunner has only the TZF 9b (the early
+        // turret-side vision port is gone): his look-around is his seat in the
+        // turret, head back off the eyepiece (wave 7)
+        vision: { eye: [gEye[0] + 0.03, gEye[1] + 0.09, gEye[2] - 0.3], look: [0, -0.1], device: { type: 'none' }, limits: { yaw: [-2.0, 2.0], pitch: [-0.9, 0.7] }, fov: 72 },
       },
       loader: {
         frame: 'turret',

@@ -1,4 +1,5 @@
 import { defineTankInterior } from './registry.js';
+import { gunnerPeriscope } from './stations.js';
 
 // REFERENCE INTERIOR: M4A3(76)W Sherman ("large hatch" 47-degree hull, T23
 // turret, 76 mm M1A1 in mount M62, wet stowage).
@@ -50,6 +51,9 @@ export default defineTankInterior('sherman76', (spec, base) => {
         eye: [-0.36, t.h * 0.5, 0.42],
         device: { type: 'sight', w: 0.12, h: 0.06, dist: 0.07 },
         seat: [-0.36, -0.15, 0.18],
+        // the M4A1 periscope sight in the roof ahead of him: its upper
+        // window is a 1x look-out beside the M47 telescope (wave 7)
+        vision: gunnerPeriscope(spec, [-0.36, t.h * 0.5, 0.42], { yaw: [-0.3, 0.3] }),
       },
       loader: {
         frame: 'turret',

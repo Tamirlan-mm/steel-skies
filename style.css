@@ -2047,6 +2047,19 @@ html.ss-touch #garage.gxT .gxSheetGo {
 }
 html.ss-touch #garage.gxT .gxSheetGo:active { background: var(--gx-ink); }
 html.ss-touch #garage.gxT .gxSheetGo:disabled { opacity: 0.4; }
+/* wave 7: the sheet's action never leaves the screen. A short landscape
+   phone (740x360: card 244 px + the 60 px button > the 308 px body) would
+   otherwise push TO BATTLE past the viewport's foot; it rides the body's
+   bottom edge instead, over whatever scrolls under it, and on a short screen
+   it is a 48 px block (still >= 44). */
+html.ss-touch #garage.gxT .gxSheetFoot {
+  position: sticky; bottom: 0; z-index: 2; pointer-events: none;
+}
+html.ss-touch #garage.gxT .gxSheetFoot > * { pointer-events: auto; }
+@media (max-height: 420px) {
+  html.ss-touch #garage.gxT .gxSheetGo { min-height: 48px; }
+  html.ss-touch #garage.gxT .gxOverlayBody { padding-bottom: var(--g-b); }
+}
 /* inside the sheets: chips and rows grow to finger size and wrap */
 html.ss-touch #garage.gxT .statRow label { flex: 0 0 86px; }
 html.ss-touch #garage.gxT .gxChips { gap: 6px; }

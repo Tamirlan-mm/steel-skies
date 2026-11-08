@@ -223,6 +223,7 @@ function tankHelp(spec) {
   <span>R (hold) — repair · F — extinguisher · G — smoke · H — first aid</span>
   <span>${support} · M — tactical map · Tab — scoreboard</span>
   <span>C — crew stations · X — third person · Scroll — hatch (in a station)</span>
+  <span>E — gunner: sight / look-around (in the gunner's station)</span>
   <span>J (hold) — abandon vehicle · Esc — pause</span>
 `;
 }
@@ -4190,6 +4191,8 @@ export class CombinedBattle {
   dispose() {
     resetAudio();
     if (this._crewStations) this._crewStations.dispose();
+    // ...and the aircraft cockpit layer, by its owner (wave 6 layer API)
+    this.planeCam?.disposeCockpit?.();
     // F6: resetScenery() deliberately keeps `owned`, so without this every
     // battle's ~570 props leave their geometries and materials on the GPU
     try {

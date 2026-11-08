@@ -323,6 +323,8 @@ export class PlaneCamera {
     L.update(dt, plane);
   }
 
+  // Battle teardown (airBattle / combinedBattle dispose(), before their scene
+  // traverse): frees the layer's own geometry and materials and detaches it.
   disposeCockpit() {
     if (this.cockpitLayer) this.cockpitLayer.dispose();
     this.cockpitLayer = null;
