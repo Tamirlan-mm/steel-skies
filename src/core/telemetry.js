@@ -8,9 +8,27 @@
 // Everything here is best-effort and must never throw into the game.
 
 const KEY = 'steelSkies.log.v1';
+const PLAYER_KEY = 'steelSkies.player.v1';
 const MAX_ENTRIES = 1500;
+const MAX_UNSENT = 5000; // never drop an entry the server has not confirmed, up to this
 const HITCH_MS = 100; // a frame this long is logged as a hitch
 const SAMPLE_EVERY_S = 30; // performance sample period during a battle
+
+// Upload: entries are kept locally (survive reloads) until the collector
+// acknowledges them, then marked sent. Offline or blocked (e.g. a host whose
+// CSP forbids the request) they simply wait for the next attempt.
+const ENDPOINT = 'https://steel-skies-logs.tamirlan-meshiyev.workers.dev/ingest';
+const FLUSH_EVERY_MS = 15000;
+const BATCH = 300;
+
+const rid = (n = 16) => {
+  const a = new Uint8Array(n);
+  (globalThis.crypto || { getRandomValues: (x) => x.map(() => (Math.random() * 256) | 0) }).getRandomValues(a);
+  return Array.from(a, (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+};
+let playerId = null;
+const sessionId = rid(16);
+let flushing = false;
 
 const entries = [];
 let ctx = { mode: 'hangar' };
@@ -29,7 +47,7 @@ function persist() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     try {
-      localStorage.setItem(KEY, JSON.stringify(entries.slice(-MAX_ENTRIES)));
+      localStorage.setItem(KEY, JSON.stringify(trimmed()));
     } catch { /* storage full or blocked */ }
   }, 1000);
 }
@@ -44,13 +62,86 @@ function short(v) {
   }
 }
 
+// The kept log: the last MAX_ENTRIES sent entries plus every unsent one (up to
+// MAX_UNSENT), in order.
+function trimmed() {
+  let unsent = 0;
+  for (const e of entries) if (!e.sent) unsent++;
+  let keepSent = MAX_ENTRIES;
+  const out = [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (!e.sent) {
+      if (unsent-- <= MAX_UNSENT) out.push(e);
+    } else if (keepSent-- > 0) out.push(e);
+  }
+  return out.reverse();
+}
+
+function deviceLite() {
+  const d = deviceInfo();
+  return { ua: d.ua, gpu: d.gpu, screen: d.screen, cores: d.cores, memGB: d.memGB };
+}
+
+async function flush(useBeacon = false) {
+  if (flushing || typeof fetch !== 'function' || !playerId) return;
+  const batch = [];
+  for (const e of entries) {
+    if (!e.sent) batch.push(e);
+    if (batch.length >= BATCH) break;
+  }
+  if (!batch.length) return;
+  const body = JSON.stringify({
+    player: playerId, session: sessionId, build: document.lastModified, device: deviceLite(),
+    entries: batch.map((e) => ({ uid: e.uid, t: e.t, kind: e.kind, msg: e.msg, ctx: e.ctx, data: e.data })),
+  });
+  if (useBeacon && navigator.sendBeacon) {
+    // the page is going away: hand it to the browser; the entries stay unsent
+    // locally and are re-sent next time (the server ignores duplicates)
+    try { navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'text/plain' })); } catch { /* ignore */ }
+    return;
+  }
+  flushing = true;
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST', body, keepalive: body.length < 60000, headers: { 'Content-Type': 'text/plain' },
+    });
+    if (res.ok) {
+      const j = await res.json();
+      const ack = new Set(j.ack || []);
+      for (const e of batch) if (ack.has(e.uid)) e.sent = 1;
+      persist();
+      if (batch.length >= BATCH) setTimeout(() => flush(), 500);
+    }
+  } catch { /* offline / blocked: retry later */ }
+  flushing = false;
+}
+
 // kind: 'error' | 'warn' | 'hitch' | 'perf' | 'event' | 'info'
+const repeats = new Map(); // a message that repeats every frame must not flood the log
+const REPEAT_CAP = 20;
+
 export function logEvent(kind, msg, data = null) {
   try {
-    const e = { t: now(), kind, msg: short(msg), ctx: { ...ctx } };
+    const text = short(msg);
+    if (kind === 'error' || kind === 'warn' || kind === 'hitch') {
+      const key = kind + '|' + (kind === 'hitch' ? ctx.mode : text);
+      const n = (repeats.get(key) || 0) + 1;
+      repeats.set(key, n);
+      if (n > REPEAT_CAP) {
+        if (n % 100 === 0) logEvent('info', `repeated ×${n}: ${text}`.slice(0, 300));
+        return;
+      }
+    }
+    const e = { uid: rid(20), t: now(), kind, msg: text, ctx: { ...ctx } };
     if (data != null) e.data = data;
     entries.push(e);
-    if (entries.length > MAX_ENTRIES * 1.2) entries.splice(0, entries.length - MAX_ENTRIES);
+    if (entries.length > (MAX_ENTRIES + MAX_UNSENT) * 1.1) {
+      const keep = trimmed();
+      entries.length = 0;
+      entries.push(...keep);
+    }
+    if (kind === 'error') setTimeout(() => flush(), 1000);
     persist();
     if (panel && panel.style.display !== 'none') renderPanel();
   } catch { /* never throw */ }
@@ -110,8 +201,24 @@ export function initTelemetry() {
   started = true;
   try {
     const old = JSON.parse(localStorage.getItem(KEY) || '[]');
-    if (Array.isArray(old)) entries.push(...old.slice(-MAX_ENTRIES));
+    // entries from before upload existed had no uid: give them one so they go up too
+    if (Array.isArray(old)) for (const e of old) { if (!e.uid) e.uid = rid(20); entries.push(e); }
   } catch { /* ignore */ }
+  try {
+    playerId = localStorage.getItem(PLAYER_KEY);
+    if (!playerId || !/^[a-z0-9]{6,64}$/.test(playerId)) {
+      playerId = rid(16);
+      localStorage.setItem(PLAYER_KEY, playerId);
+    }
+  } catch {
+    playerId = rid(16);
+  }
+  setInterval(() => flush(), FLUSH_EVERY_MS);
+  setTimeout(() => flush(), 5000);
+  window.addEventListener('pagehide', () => flush(true));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush(true);
+  });
   logEvent('info', 'session start', { url: location.href.split('#')[0], build: document.lastModified });
 
   window.addEventListener('error', (ev) => {
@@ -182,17 +289,23 @@ export function logReport() {
   };
 }
 
+// Clears the local view of everything already uploaded; entries the server
+// has not confirmed yet are kept so nothing is lost.
 export function clearLog() {
+  const keep = entries.filter((e) => !e.sent);
   entries.length = 0;
-  try { localStorage.removeItem(KEY); } catch { /* ignore */ }
+  entries.push(...keep);
+  persist();
   logEvent('info', 'log cleared');
 }
 
 function renderPanel() {
   const list = panel.querySelector('.ssLogList');
   const counts = logReport().counts;
+  const pending = entries.filter((e) => !e.sent).length;
   panel.querySelector('.ssLogHead span').textContent =
-    `LOG · errors ${counts.error || 0} · warnings ${counts.warn || 0} · hitches ${counts.hitch || 0} · samples ${counts.perf || 0}`;
+    `LOG · errors ${counts.error || 0} · warnings ${counts.warn || 0} · hitches ${counts.hitch || 0} · samples ${counts.perf || 0}` +
+    ` · ${pending ? `${pending} waiting to upload` : 'all uploaded'} · player ${playerId}`;
   const rows = entries.slice(-300).reverse().map((e) => {
     const d = e.data ? ' ' + short(e.data) : '';
     return `<div class="ssLog ${e.kind}"><b>${e.t.slice(11, 19)}</b> [${e.kind}] ${escapeHtml(e.msg)}${escapeHtml(d).slice(0, 400)} <i>${escapeHtml(e.ctx.mode || '')}</i></div>`;

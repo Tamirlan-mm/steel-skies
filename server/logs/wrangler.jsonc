@@ -1,0 +1,14 @@
+{
+  "name": "steel-skies-logs",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "steel_skies_logs",
+      "database_id": "790a5258-db37-42f2-8cc5-d9bb9f796fe9"
+    }
+  ],
+  "observability": { "enabled": true },
+  "preview_urls": false
+}

@@ -33,3 +33,7 @@ Then open http://localhost:5173. Use `npm run build` for a static build in `dist
 - The full per-file list is in [`public/media/CREDITS.md`](public/media/CREDITS.md) and [`public/media/sfx/CREDITS.md`](public/media/sfx/CREDITS.md).
 
 Vehicle names and markings are historical. Nothing in this project is taken from any other game.
+
+## Diagnostics
+
+The game keeps a technical log (errors, frame hitches, performance samples, device and GPU model) and uploads it to the project's log collector (`server/logs`, a Cloudflare Worker with a D1 database) so bugs and lag can be analysed. Nothing personal is sent: a random player id, a session id, the browser user agent and the GPU name. Press **F8** (or open the page with `#logs`) to see the log.
