@@ -21,6 +21,10 @@ import { ownedMods } from './game/mods.js';
 import { vehicleKind, brLabel, brOf } from './game/battleRating.js';
 import { SPEC_INDEX, CREW_SKILLS, CREW_MAX_LEVEL, CREW_QUALS } from './game/progress.js';
 import { MOD_DEFS } from './game/mods.js';
+import { initTelemetry, logEvent, setLogContext, setLogRenderer, watchContext, toggleLogPanel } from './core/telemetry.js';
+
+// Diagnostics log (F8 / #logs): errors, hitches and perf samples for bug reports.
+initTelemetry();
 
 // Test-build unlock: every vehicle researched, every modification installed,
 // every crew trained to Ace. Progress lives in localStorage per site and per
@@ -60,6 +64,12 @@ const PHONE = TOUCH_DEVICE && touchDeviceClass() === 'phone';
 if (PHONE) setAssetTier(512);
 const renderer = new THREE.WebGLRenderer({ antialias: !PHONE });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, TOUCH_DEVICE ? 1.5 : 2));
+watchContext(renderer.domElement);
+// read lazily at sample time: postfx is created later, per battle
+setLogRenderer(renderer, () => ({
+  scale: postfx && postfx.renderScale != null ? +(+postfx.renderScale).toFixed(2) : null,
+  graphics: readGraphics(),
+}));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = TOUCH_DEVICE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
@@ -712,6 +722,8 @@ function writeRenderFloor(v) {
 }
 
 function startBattle(battleMode, vehicleType, specId) {
+  setLogContext({ mode: battleMode, vehicle: specId, graphics: readGraphics() });
+  logEvent('event', 'battle start', { mode: battleMode, vehicle: specId, type: vehicleType, graphics: readGraphics() });
   if (battle) {
     battle.dispose();
     battle = null;
@@ -1242,6 +1254,10 @@ function endToResults(result) {
   // the battle can end and the player can quit within the same frame; the
   // economy must only be banked once
   if (settled) return;
+  logEvent('event', result && result.quit ? 'battle quit' : 'battle end', {
+    victory: !!(result && result.victory), kills: result && result.kills, secs: Math.round(elapsed || 0),
+  });
+  setLogContext({ mode: 'hangar', vehicle: null });
   settled = true;
   if (battle) battle.finished = true; // freeze the battle behind the overlay
   document.exitPointerLock?.();
@@ -1413,9 +1429,11 @@ function pauseBattle(reason) {
       <div class="btnRow">
         <button class="primary" id="resumeBtn">RESUME</button>
         <button id="quitBtn2">LEAVE BATTLE</button>
+        <button id="logBtn">LOG (F8)</button>
       </div>
     `);
     bindSettingsSliders(overlay);
+    document.getElementById('logBtn').addEventListener('click', () => toggleLogPanel(true));
     document.getElementById('resumeBtn').addEventListener('click', () => {
       hideOverlay();
       paused = false;
