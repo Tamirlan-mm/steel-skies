@@ -773,6 +773,9 @@ export class Hangar3D {
     this.lastPy = 0;
 
     this.pixelCap = 2;
+    // mobile menu: a device-class ceiling on the pixel ratio (setDeviceCap);
+    // a desktop never sets it
+    this.deviceCap = Infinity;
     this.shadowSize = 2048;
     this.quality = 'high';
     // L-09 budget (STAGE_MAX_PIXELS): the drawing buffer's scale under the cap
@@ -1003,7 +1006,65 @@ export class Hangar3D {
   // -------------------------------------------------------------------------
   attachInput() {
     const el = this.canvas;
+    // mobile menu (wave 6): every finger on the canvas, so a second one turns
+    // the one-finger orbit into a pinch zoom (a mouse only ever has one)
+    this.touches = new Map(); // pointerId -> { x, y }
+    this.pinch = null;        // { span, dist } when two fingers are down
+    const span = () => {
+      const p = [...this.touches.values()];
+      return p.length < 2 ? 0 : Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+    };
+    const touchy = (e) => e.pointerType === 'touch' || e.pointerType === 'pen';
+    this.onTouchDown = (e) => {
+      if (!touchy(e)) return false;
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (el.setPointerCapture) {
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* nicety */ }
+      }
+      this.idle = IDLE_RESUME;
+      if (this.touches.size >= 2) {
+        // the orbit stops where it is and the two fingers own the zoom
+        this.dragging = false;
+        this.pointerId = -1;
+        this.pinch = { span: Math.max(span(), 1), dist: this.distTarget };
+        return true;
+      }
+      return false;
+    };
+    this.onTouchMove = (e) => {
+      const t = this.touches.get(e.pointerId);
+      if (!t) return false;
+      t.x = e.clientX;
+      t.y = e.clientY;
+      if (!this.pinch || this.touches.size < 2) return false;
+      // fingers apart = closer, the wheel's sense; same limits as the wheel
+      this.distTarget = clamp(
+        this.pinch.dist * (this.pinch.span / Math.max(span(), 1)),
+        this.fitDist * 0.55,
+        this.fitDist * 2.1,
+      );
+      this.idle = IDLE_RESUME;
+      return true;
+    };
+    this.onTouchUp = (e) => {
+      if (!this.touches.delete(e.pointerId)) return false;
+      if (this.pinch && this.touches.size < 2) {
+        this.pinch = null;
+        // the finger left behind carries on orbiting from where it is
+        const [id, p] = [...this.touches.entries()][0] || [];
+        if (p) {
+          this.dragging = true;
+          this.pointerId = id;
+          this.lastPx = p.x;
+          this.lastPy = p.y;
+        }
+        this.idle = IDLE_RESUME;
+        return true;
+      }
+      return false;
+    };
     this.onDown = (e) => {
+      if (this.onTouchDown(e)) return;
       if (this.dragging) return;
       this.dragging = true;
       this.pointerId = e.pointerId;
@@ -1022,6 +1083,7 @@ export class Hangar3D {
       }
     };
     this.onMove = (e) => {
+      if (this.onTouchMove(e)) return;
       if (!this.dragging || e.pointerId !== this.pointerId) return;
       const dx = e.clientX - this.lastPx;
       const dy = e.clientY - this.lastPy;
@@ -1032,6 +1094,7 @@ export class Hangar3D {
       this.idle = IDLE_RESUME;
     };
     this.onUp = (e) => {
+      if (this.onTouchUp(e)) return;
       if (e.pointerId !== this.pointerId) return;
       this.dragging = false;
       this.pointerId = -1;
@@ -1266,11 +1329,20 @@ export class Hangar3D {
     this.resize();
   }
 
+  // mobile menu (wave 6): garage.js hands a touch device its ceiling — a
+  // phone 1, a tablet 1.5 — on top of the tier's own cap
+  setDeviceCap(cap) {
+    const c = Number(cap);
+    this.deviceCap = Number.isFinite(c) && c > 0 ? c : Infinity;
+    this.applyPixelRatio();
+    this.resize();
+  }
+
   // device pixels x the tier's cap, then scaled under STAGE_MAX_PIXELS (L-09)
   applyPixelRatio() {
     if (!this.renderer) return;
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-    const base = Math.min(dpr, this.pixelCap);
+    const base = Math.min(dpr, this.pixelCap, this.deviceCap);
     const w = (this.canvas && this.canvas.clientWidth) | 0;
     const h = (this.canvas && this.canvas.clientHeight) | 0;
     const px = w * h * base * base;
@@ -1288,6 +1360,8 @@ export class Hangar3D {
       quality: this.quality,
       chain: this.postfx ? this.postfx.getQuality() : 'none',
       scale: +this.renderScale.toFixed(3),
+      pixelRatio: this.renderer ? +this.renderer.getPixelRatio().toFixed(3) : 0,
+      deviceCap: Number.isFinite(this.deviceCap) ? this.deviceCap : null,
       buffer: el ? [el.width, el.height] : null,
       maxPixels: STAGE_MAX_PIXELS[this.quality] || STAGE_MAX_PIXELS.high,
       shadowEvery: SHADOW_EVERY,
@@ -1345,6 +1419,8 @@ export class Hangar3D {
     this.lastMs = 0;
     this.dragging = false;
     this.pointerId = -1;
+    this.touches?.clear();
+    this.pinch = null;
     // the materials being faded belong to the shared factory, and the battle
     // that is about to start draws with them
     this.finishFade();

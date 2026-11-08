@@ -83,6 +83,7 @@ import { XrayView } from '../ui/xray.js';
 // K-04: the real gunner's sight per vehicle, its detents and labels
 import { opticSteps } from '../ui/hud.js';
 import { clamp, lerp, rand, wrapAngle } from '../core/utils.js';
+import { stationsFor } from '../vehicles/interior/index.js';
 
 // The terrain mesh is +/-1300: it covers the aircraft limit (MAP_EDGE 1200) and
 // both strips, exactly as the air battle's own 2600 mesh does. 277 segments
@@ -221,6 +222,7 @@ function tankHelp(spec) {
   <span>LMB — fire · Space — machine gun · 1 / 2 / 3 — shell type</span>
   <span>R (hold) — repair · F — extinguisher · G — smoke · H — first aid</span>
   <span>${support} · M — tactical map · Tab — scoreboard</span>
+  <span>C — crew stations · X — third person · Scroll — hatch (in a station)</span>
   <span>J (hold) — abandon vehicle · Esc — pause</span>
 `;
 }
@@ -1221,9 +1223,14 @@ export class CombinedBattle {
     const elev = p.spec.gunElev || { min: -0.14, max: 0.38 };
     const maxPitch = p.spec.aa ? 1.4 : elev.max + 0.06;
     const minPitch = elev.min - 0.06;
-    this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
-    this.camPitch = clamp(this.camPitch - input.mouseDY * sens, minPitch, maxPitch);
-    if (input.wheel !== 0) {
+    // wave 6 crew stations (see battle.js): C cycles, X leaves
+    const crew = stationsFor(this);
+    crew.input(dt);
+    if (!crew.ownsMouse) {
+      this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
+      this.camPitch = clamp(this.camPitch - input.mouseDY * sens, minPitch, maxPitch);
+    }
+    if (input.wheel !== 0 && !crew.ownsMouse) {
       if (this.sniper) {
         // K-04: the wheel steps through the optic's detents (true field,
         // real magnification, labelled aux), widest first
@@ -1258,7 +1265,7 @@ export class CombinedBattle {
       Math.sin(this.camPitch),
       Math.cos(this.camYaw) * Math.cos(this.camPitch),
     );
-    const origin = tmpV2.copy(this.camera.position);
+    const origin = crew.ownsMouse ? crew.aimOrigin(p, tmpV2) : tmpV2.copy(this.camera.position);
     const end = tmpV3.copy(origin).addScaledVector(dir, 1400);
     // a wall under the reticle (past the hull) ends the aim ray on its face
     clipRayToScenery(origin, end, p.position);
@@ -3262,6 +3269,8 @@ export class CombinedBattle {
 
   // ---------------- camera & HUD ----------------
   updateCamera(dt) {
+    // wave 6: is a tank crew-station view up this frame (hides it if not)
+    const stationView = stationsFor(this).beginFrame(this.spectate || this.playerIsPlane ? null : this.player);
     if (this.spectate) {
       this.updateSpectator(dt);
       this.shake.apply(this.camera);
@@ -3285,6 +3294,7 @@ export class CombinedBattle {
       st.dist = this.camDist;
       st.shake = this.shake;
       st.cockpit = !!this.cockpit && p.alive;
+      st.scene = this.scene; // wave 6: the per-type cockpit layer
       // keyboard flying: the raw aim follows the nose this frame's physics
       // left (strength from updatePlaneControls; a dead pilot's aim is left
       // alone)
@@ -3296,6 +3306,8 @@ export class CombinedBattle {
     // the aim zoom tilts camera.up toward the aircraft's own near the
     // vertical; a tank crew that took over from that pilot wants the world's
     this.camera.up.set(0, 1, 0);
+    // and the last aeroplane's cockpit layer is not this crew's
+    if (this.planeCam.cockpitLayer) this.planeCam.cockpitLayer.setVisible(false);
     const dir = tmpV.set(
       Math.sin(this.camYaw) * Math.cos(this.camPitch),
       Math.sin(this.camPitch),
@@ -3326,6 +3338,9 @@ export class CombinedBattle {
         this.camera.position.lerp(pos, 1 - Math.pow(0.001, dt));
         this.camera.lookAt(p.position.x, p.position.y + 2, p.position.z);
       }
+    } else if (stationView) {
+      // commander / driver / loader / bow gunner (vehicles/interior/)
+      targetFov = stationsFor(this).placeCamera(this.camera, p, dt);
     } else if (this.sniper) {
       // K-04: this vehicle's own sight at the chosen detent
       const steps = opticSteps(p.spec);
@@ -3588,7 +3603,7 @@ export class CombinedBattle {
 
     hud.setMouseAim(0, 0, false);
     // sniper optics overlay: ballistic range marks + rangefinder
-    hud.setCrosshairVisible(!this.sniper);
+    hud.setCrosshairVisible(!this.sniper && !(this._crewStations && this._crewStations.viewing));
     if (this.sniper && p.alive) {
       const v = p.spec.shells[p.shellType].speed;
       const halfTan = Math.tan((this.fov * Math.PI) / 360);
@@ -3777,7 +3792,7 @@ export class CombinedBattle {
         (g.x * 0.5 + 0.5) * window.innerWidth,
         (-g.y * 0.5 + 0.5) * window.innerHeight,
         g.z < 1,
-        { fov: this.camera.fov, gunSpeed: p.spec.gun && p.spec.gun.speed },
+        { fov: this.camera.fov, gunSpeed: p.spec.gun && p.spec.gun.speed, graticule: this.planeCam.gunsightOf?.(p) },
       );
     } else if (p.alive) {
       hud.setReflectorSight?.(0, 0, false);
@@ -4174,6 +4189,7 @@ export class CombinedBattle {
 
   dispose() {
     resetAudio();
+    if (this._crewStations) this._crewStations.dispose();
     // F6: resetScenery() deliberately keeps `owned`, so without this every
     // battle's ~570 props leave their geometries and materials on the GPU
     try {

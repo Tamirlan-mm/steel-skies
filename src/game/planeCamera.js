@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { groundHeightAt } from '../world/airfield.js';
 import { clamp, wrapAngle } from '../core/utils.js';
+import { resolveCockpit, CockpitLayer } from '../vehicles/cockpit/index.js';
 
 // The aircraft camera: chase, aim zoom along the nose, and the two death cams.
 // One controller for every battle that flies aeroplanes, so the air battle and
@@ -138,28 +139,18 @@ export const COCKPIT_NEAR = 0.1;
 // inside the 60 deg cockpit frustum is >= 0.156 m away (Fw 190 canopy
 // frame), so COCKPIT_NEAR = 0.1 cannot clip it, and the backlog's 0.05 would
 // only halve the depth precision for nothing.
-const EYE_UP = 0.16;
-const EYE_FWD = 0.05;
+// (EYE_UP 0.16 / EYE_FWD 0.05 now live in vehicles/cockpit/index.js, which
+// derives the default eye exactly as this file used to.)
 
 // The pilot's eye in the aircraft's body frame (+Z nose, +Y up, +X left).
-// planes.js keeps the canopy station in its private layout, so the station is
-// derived the way its canopySections() derives it: the spec's own canopy
-// shape, else the default glasshouse by engine type. (The old namespace probe
-// for a planeEyePoint export that never existed only made every build warn.)
+// Wave 6: the per-type cockpit framework (vehicles/cockpit/) owns it — a
+// type's cockpit file may place the seat; without one it is derived from the
+// spec's own canopy shape (else the default glasshouse by engine type), the
+// same numbers this function always returned.
 export function cockpitEyeLocal(spec, out = new THREE.Vector3()) {
-  const shape = (spec && spec.shape) || {};
-  const look = (spec && spec.look) || {};
-  let cy;
-  let cz;
-  if (shape.canopy && shape.canopy.glass) {
-    cy = shape.canopy.y != null ? shape.canopy.y : 0.5;
-    cz = shape.canopy.z != null ? shape.canopy.z : 0;
-  } else {
-    const len = (spec && spec.len) || 9;
-    cz = look.engine === 'radial' ? len * 0.06 : len * 0.04;
-    cy = look.armoured ? 0.62 : 0.5;
-  }
-  return out.set(0, cy + EYE_UP, cz + EYE_FWD);
+  const def = spec ? resolveCockpit(spec) : null;
+  if (def && def.eye) return out.set(def.eye[0], def.eye[1], def.eye[2]);
+  return out.set(0, 0.66, 0.05);
 }
 
 // Collimated at infinity: the point is taken along the boresight FROM THE
@@ -303,6 +294,38 @@ export class PlaneCamera {
     // the chase view's near plane, restored when the cockpit view is left
     this.nearChase = camera && camera.near > 0 ? camera.near : 0.3;
     this._cockpitYaw = 0;
+    // wave 6: the per-type cockpit layer (panel, dials, canopy frame,
+    // gunsight), built on first use for the aeroplane being flown
+    this.cockpitLayer = null;
+  }
+
+  // The reflector graticule of the type being flown (H-03 / cockpit file):
+  // 'k14' | 'revi' | 'gm2' | 'pbp' | 'type98'.
+  gunsightOf(plane) {
+    const def = plane && plane.spec ? resolveCockpit(plane.spec) : null;
+    return def && def.gunsight ? def.gunsight.type : 'revi';
+  }
+
+  // Show (and keep in step) or hide the cockpit layer. Needs the battle
+  // scene: st.scene in update().
+  _cockpitLayerFrame(dt, plane, scene, on) {
+    let L = this.cockpitLayer;
+    if (!on || !scene || !plane || !plane.spec) {
+      if (L) L.setVisible(false);
+      return;
+    }
+    if (L && (L.scene !== scene || L.plane.spec !== plane.spec)) {
+      L.dispose();
+      L = this.cockpitLayer = null;
+    }
+    if (!L) L = this.cockpitLayer = new CockpitLayer(scene, plane);
+    L.setVisible(true);
+    L.update(dt, plane);
+  }
+
+  disposeCockpit() {
+    if (this.cockpitLayer) this.cockpitLayer.dispose();
+    this.cockpitLayer = null;
   }
 
   // Mouse counts into the raw aim, measured on the SCREEN: a count to the
@@ -588,6 +611,7 @@ export class PlaneCamera {
     const dead = !!st.dead || plane.alive === false;
     const cockpit = !dead && !!st.cockpit;
     this._setNear(cockpit ? COCKPIT_NEAR : this.nearChase);
+    if (!cockpit && this.cockpitLayer) this._cockpitLayerFrame(dt, plane, null, false);
 
     if (cockpit) {
       // ---- cockpit (A-02): the pilot's eye, rigid on the airframe ----
@@ -609,6 +633,7 @@ export class PlaneCamera {
       s[S_ZXV] = 0;
       s[S_ZYV] = 0;
       s[S_ZZV] = 0;
+      this._cockpitLayerFrame(dt, plane, st.scene, true);
     } else if (dead) {
       // ---- death cams: ease the eye, look at the subject ----
       if (this.mode !== 'dead') {
@@ -732,4 +757,10 @@ export class PlaneCamera {
 // so a sweep follows the screen in a bank. The reflector sight (H-03) goes
 // where pc.gunLineWorldPoint(plane, v) projects through the final camera:
 //     const g = pc.gunLineWorldPoint(player, tmpV).project(camera);
-//     hud.setReflectorSight(sx(g), sy(g), g.z < 1, { fov: camera.fov, gunSpeed: spec.gun.speed });
+//     hud.setReflectorSight(sx(g), sy(g), g.z < 1, { fov: camera.fov, gunSpeed: spec.gun.speed,
+//       graticule: pc.gunsightOf(player) });
+//
+// Wave 6 cockpit framework: pass the battle scene as `st.scene` and the
+// cockpit view also draws the type's cockpit (vehicles/cockpit/<id>.js:
+// canopy frame, panel with live dials, gunsight body, stick) as a near layer
+// rigid on the airframe; it is hidden whenever the cockpit view is not up.

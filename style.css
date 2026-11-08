@@ -1643,8 +1643,8 @@ html.ss-touch #app {
 html.ss-touch canvas.game, html.ss-touch #hangarCanvas { touch-action: none; }
 html.ss-touch button { touch-action: manipulation; }
 
-/* ---------- rotate gate: a phone is always landscape; a tablet only in battle */
-html.ss-touch.ss-phone.ss-portrait #rotateGate,
+/* ---------- rotate gate: a battle is always landscape (wave 6: the hangar
+   menu now has a portrait layout of its own, so the gate waits for the battle) */
 html.ss-touch.ss-portrait.ss-inbattle #rotateGate {
   display: flex; position: fixed; inset: 0; z-index: 200;
   flex-direction: column; align-items: center; justify-content: center; gap: 14px;
@@ -1750,6 +1750,8 @@ html.ss-tablet #touchUI .tc-scout { top: calc(var(--st) + 176px); }
   right: calc(var(--sr) + 118px); bottom: calc(var(--sb) + 80px);
   width: 56px; height: 52px;
 }
+/* wave 6: crew stations, above the SIGHT button */
+#touchUI .tc-crew { right: calc(var(--sr) + 160px); bottom: calc(var(--sb) + 82px); width: 56px; height: 40px; }
 #touchUI .tc-zin { right: calc(var(--sr) + 104px); bottom: calc(var(--sb) + 134px); }
 #touchUI .tc-zout { right: calc(var(--sr) + 104px); bottom: calc(var(--sb) + 82px); }
 #touchUI .tc-zin, #touchUI .tc-zout { font-size: 18px; }
@@ -1856,79 +1858,289 @@ html.ss-compact #overlay { gap: 10px; padding: 10px; }
 html.ss-compact #overlay h2 { font-size: 24px; letter-spacing: 5px; }
 html.ss-compact #overlay .btnRow { flex-wrap: wrap; justify-content: center; }
 
-/* ---------- the hangar on touch ---------- */
-html.ss-touch #garage .gxTopNav, html.ss-touch #garage .modeTab, html.ss-touch #garage .gxScreenTab,
-html.ss-touch #garage .gxVAct, html.ss-touch #garage .modChip, html.ss-touch #garage .bmChip,
-html.ss-touch #garage .gxPick, html.ss-touch #garage .gxBuy, html.ss-touch #garage .gxTargetBtn,
-html.ss-touch #garage .gxToggle, html.ss-touch #garage .gxInspectBtn, html.ss-touch #garage .gxNation {
-  min-height: 40px;
+/* ============================================================
+   MOBILE MAIN MENU (wave 6). On a touch device garage.js builds its own
+   skeleton (touchSkeleton) and marks the root #garage.gxT; every rule below
+   is scoped to that, so a desktop never matches one of them.
+     landscape   top bar | stage + thumb column (mode, six sheets, TO BATTLE)
+                 | dock under the stage: nation + class chips, carousel
+     portrait    top bar (two lines) | stage | dock | thumb column across
+     sheets      #gxOverlay full screen with a BACK block; X-RAY and
+                 PROTECTION take the whole screen with their own back button
+   Same paper-and-ink register as the desktop hangar: radius 0, no shadows,
+   1 px rules, a selected control is an ink block, TO BATTLE the olive block.
+   Every control >= 44 x 44 px, every text >= 12 px, notches respected.
+   ============================================================ */
+html.ss-touch #garage.gxT {
+  --g-l: max(8px, env(safe-area-inset-left));
+  --g-r: max(8px, env(safe-area-inset-right));
+  --g-t: env(safe-area-inset-top, 0px);
+  --g-b: max(6px, env(safe-area-inset-bottom));
+  --g-top: 52px;
+  --g-side: clamp(226px, 28vw, 300px);
+  grid-template-columns: minmax(0, 1fr) calc(var(--g-side) + var(--g-r));
+  grid-template-rows: calc(var(--g-top) + var(--g-t)) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top   top"
+    "stage side"
+    "dock  side";
+  font-size: 14px;
 }
-html.ss-touch #garage .gxGlyph { width: 40px; height: 40px; }
-html.ss-touch #garage .gxRailBtn { width: 38px; height: 38px; }
-html.ss-touch #garage .gxResearchRow { touch-action: pan-x; scroll-snap-type: x proximity; }
-html.ss-touch #garage .gxVCard { scroll-snap-align: start; }
-html.ss-touch #garage .gxRight { touch-action: pan-y; }
-html.ss-touch #garage .gxSet input[type=range] { min-height: 32px; }
-html.ss-touch #garage .ammoBtn { width: 40px; height: 40px; font-size: 15px; }
-html.ss-touch #garage .ammoRow { gap: 6px; }
-html.ss-touch #garage #battleBtn { min-height: 40px; }
-/* X-ray / protection inspector bar and legend */
-html.ss-touch .ixBack, html.ss-touch .ixTool, html.ss-touch .ixClose,
-html.ss-touch .ixModes button, html.ss-touch .ixSeg button { min-height: 40px; }
-html.ss-touch .ixClose { min-width: 40px; }
-html.ss-touch .ixChip { min-height: 32px; }
+/* a finger, not a cursor: no target under 44 x 44 */
+html.ss-touch #garage.gxT button { min-height: 44px; min-width: 44px; touch-action: manipulation; }
+html.ss-touch #garage.gxT input[type=range] { min-height: 44px; }
+html.ss-touch #garage.gxT select { min-height: 44px; }
+html.ss-touch #garage.gxT [data-ix].ixRow { min-height: 44px; }
+/* and no text under 12 px (the desktop's 10-11 px labels) */
+html.ss-touch #garage.gxT :is(.gxHint, .statRow, .numbers, .gxBr, .gxCrewTag, .gxCostTag, .gxLine,
+  .gxTargetBtn, .gxTierHead, .modsRow > span, .modChip, .bmChip, .gxCardHead, .gxCardHead b, .gxDesc,
+  .gxPick, .gxPick small, .gxBuy, .gxSet, .gxSet label, .gxToggle, .gxNation, .gxVMeta, .gxVFoot,
+  .gxCur, .gxSlot, .gxEmpty, .gxHeroSub, .gxRow, .unlockBtn, .ammoRow, .ammoTotal, .gxKeyNote,
+  .ixBack, .ixName small, .ixModes button, .ixHelp, .ixTool, .ixChip, .ixCard h4, .ixCard h4 b,
+  .ixCard h5, .ixHint, .ixRow, .ixRow em, .ixSeg button, .ixSelect, .ixRange label, .ixStat, .ixKv,
+  .ixPath li, .ixPath li em, .ixOdds, .ixOdds b, .ixMini, .ixScale span, .ixTicks i, .ixCall,
+  .ixTip, .ixTip small, .ixVerdict, .ixTipVerdict) { font-size: 12px; }
 
-/* phone landscape: top bar 44, the stage takes what the dock leaves */
-html.ss-compact #garage {
-  grid-template-columns: 42px minmax(0, 1fr) min(250px, 31vw);
-  grid-template-rows: 44px minmax(0, 1fr) auto;
+/* ---------- top bar ---------- */
+html.ss-touch #garage.gxT .gxTop { gap: 6px; padding: var(--g-t) var(--g-r) 0 var(--g-l); }
+html.ss-touch #garage.gxT .gxTopL { flex: 0 0 auto; gap: 6px; }
+html.ss-touch #garage.gxT .gxTopC { flex: 1 1 0; min-width: 0; justify-content: center; }
+html.ss-touch #garage.gxT .gxTopC small {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; letter-spacing: 0.12em; color: var(--gx-ink2); text-transform: uppercase;
 }
-html.ss-compact #garage.gxCollapsed { grid-template-columns: 42px minmax(0, 1fr) 0; }
-html.ss-compact #garage.gxInspecting { grid-template-rows: 44px minmax(0, 1fr) 0; }
-html.ss-compact #garage .gxTop { gap: 4px; padding: 0 6px; }
-html.ss-compact #garage .gxTopL, html.ss-compact #garage .gxTopR { gap: 4px; }
-html.ss-compact #garage .gxTopR { padding-top: 0; }
-html.ss-compact #garage .gxTopNav { padding: 4px 6px; font-size: 11px; letter-spacing: 0.06em; min-height: 40px; }
-html.ss-compact #garage .gxTopNav[data-screen="community"] { display: none; }
-html.ss-compact #garage .gxVersion { display: none; }
-html.ss-compact #garage .gxCur { padding: 2px 5px; font-size: 12px; }
-html.ss-compact #garage .gxCur i { display: none; }
-html.ss-compact #garage #balCrew { display: none; }
-html.ss-compact #garage .gxGlyph { width: 40px; height: 40px; }
-html.ss-compact #garage #battleBtn { padding: 0 22px; height: 40px; font-size: 13px; letter-spacing: 0.16em; }
-html.ss-compact #garage .gxStrip { padding: 2px 10px 3px; }
-html.ss-compact #garage .gxStrip small { display: none; }
-html.ss-compact #garage .gxRail { gap: 3px; padding: 5px 0; overflow-y: auto; }
-html.ss-compact #garage .gxRailBtn { width: 38px; height: 38px; }
-html.ss-compact #garage .gxRailSep { margin: 1px 0; }
-html.ss-compact #garage .gxRight { padding: 6px; gap: 6px; }
-html.ss-compact #garage .gxHero { bottom: 4px; padding: 4px 10px 6px; }
-html.ss-compact #garage .gxHeroName { font-size: 17px; }
-html.ss-compact #garage .gxHeroDesc { display: none; }
-html.ss-compact #garage .gxStageTools { left: 8px; top: 26px; }
-html.ss-compact #garage .gxInspectBtn { padding: 4px 8px; min-height: 40px; }
-html.ss-compact #garage .gxInspectBtn span { display: none; }
-/* the dock: research row on top, nations and the screen tabs share one line */
-html.ss-compact #garage .gxDock {
-  display: grid; grid-template-columns: auto minmax(0, 1fr);
-  grid-template-areas: "res res" "nat bar";
+html.ss-touch #garage.gxT .gxTopR { flex: 0 1 auto; gap: 6px; padding-top: 0; }
+html.ss-touch #garage.gxT .gxGlyph { width: 44px; height: 44px; border-color: var(--gx-rule); }
+html.ss-touch #garage.gxT .gxGlyph .gxIco { width: 20px; height: 20px; }
+html.ss-touch #garage.gxT .gxFam { gap: 0; }
+html.ss-touch #garage.gxT .modeTab { padding: 0 14px; font-size: 13px; letter-spacing: 0.12em; }
+html.ss-touch #garage.gxT .modeTab + .modeTab { border-left: none; }
+html.ss-touch #garage.gxT .gxCur { height: 32px; padding: 0 8px; font-size: 13px; flex: 0 0 auto; }
+html.ss-touch #garage.gxT .gxCur i { display: none; }
+html.ss-touch.ss-phone #garage.gxT #balCrew { display: none; }
+
+/* ---------- stage: the name sits top left, out of the vehicle's way ---------- */
+html.ss-touch #garage.gxT #hangarCanvas { touch-action: none; }
+html.ss-touch #garage.gxT .gxHero {
+  left: 10px; top: 8px; bottom: auto; transform: none; width: auto; max-width: calc(100% - 20px);
+  padding: 0; text-align: left;
 }
-html.ss-compact #garage.gxInspecting .gxDock { display: none; }
-html.ss-compact #garage .gxResearchWrap { grid-area: res; padding: 4px 6px 2px; border-top: none; }
-html.ss-compact #garage .gxNations { grid-area: nat; padding: 0 4px; align-items: center; border-top: 1px solid var(--gx-rule); }
-html.ss-compact #garage .gxNation { padding: 2px 8px; min-height: 40px; border-bottom: 1px solid transparent; }
-html.ss-compact #garage .gxNation span { display: none; }
-html.ss-compact #garage .gxBottomBar { grid-area: bar; height: 40px; gap: 6px; padding: 0 6px; min-width: 0; }
-html.ss-compact #garage .gxScreens { min-width: 0; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; align-self: center; }
-/* a swipe still scrolls the tabs; the bar must not grow by a scrollbar's height (740x360) */
-html.ss-compact #garage .gxScreens::-webkit-scrollbar { display: none; }
-html.ss-compact #garage .gxScreenTab { padding: 4px 8px; letter-spacing: 0.08em; min-height: 40px; flex: 0 0 auto; }
-html.ss-compact #garage .modeTab { min-height: 40px; padding: 4px 9px; }
-html.ss-compact #garage .gxLineupSum { display: none; }
-html.ss-compact #garage .gxVCard { flex: 0 0 124px; padding: 4px; gap: 2px; }
-html.ss-compact #garage .gxVCard.selected { padding: 3px; }
-html.ss-compact #garage .gxVThumb { height: 34px; }
-html.ss-compact #garage .gxVFoot { min-height: 0; }
-html.ss-compact #garage .gxVAct { min-height: 36px; }
-html.ss-compact #garage .gxResearchRow { gap: 6px; padding-bottom: 3px; }
-html.ss-compact #garage .gxOverlayHead { padding: 4px 10px; }
+html.ss-touch #garage.gxT .gxHeroTop { justify-content: flex-start; gap: 8px; }
+html.ss-touch #garage.gxT .gxHeroName { font-size: 18px; letter-spacing: 0.08em; }
+html.ss-touch #garage.gxT .gxHeroTop .gxBr { font-size: 12px; }
+html.ss-touch #garage.gxT .gxHeroDesc { display: none; }
+
+/* ---------- the thumb column ---------- */
+html.ss-touch #garage.gxT .gxSide {
+  grid-area: side; z-index: 4; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px var(--g-r) var(--g-b) 8px; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--gx-sheet); border-left: 1px solid var(--gx-rule2);
+}
+html.ss-touch #garage.gxT .gxModeBtn {
+  position: relative; flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-start;
+  min-height: 52px; padding: 4px 30px 5px 10px; text-align: left; min-width: 0;
+  font-family: inherit; color: var(--gx-ink); background: transparent; border: 1px solid var(--gx-ink); cursor: pointer;
+}
+html.ss-touch #garage.gxT .gxModeBtn::after {
+  content: ''; position: absolute; right: 12px; top: 50%; width: 9px; height: 9px; margin-top: -5px;
+  border-right: 2px solid var(--gx-ink); border-bottom: 2px solid var(--gx-ink); transform: rotate(-45deg);
+}
+html.ss-touch #garage.gxT .gxModeBtn > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.ss-touch #garage.gxT .gxModeBtn small { font-size: 12px; letter-spacing: 0.14em; color: var(--gx-ink2); }
+html.ss-touch #garage.gxT .gxModeBtn b { font-size: 15px; font-weight: 700; letter-spacing: 0.08em; }
+html.ss-touch #garage.gxT .gxModeBtn span { font-size: 12px; letter-spacing: 0.06em; color: var(--gx-ink2); }
+html.ss-touch #garage.gxT .gxModeBtn:active:not(:disabled) { background: var(--gx-wash); }
+html.ss-touch #garage.gxT .gxModeBtn:disabled { opacity: 0.4; cursor: default; }
+html.ss-touch #garage.gxT .gxSheetNav {
+  flex: 0 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+}
+html.ss-touch #garage.gxT .gxSheetBtn {
+  display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 6px;
+  font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: 0.03em; color: var(--gx-ink);
+  background: transparent; border: 1px solid var(--gx-rule2); cursor: pointer;
+}
+html.ss-touch #garage.gxT .gxSheetBtn .gxIco { flex: 0 0 16px; width: 16px; height: 16px; }
+html.ss-touch #garage.gxT .gxSheetBtn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.ss-touch #garage.gxT .gxSheetBtn:active:not(:disabled) { background: var(--gx-wash); border-color: var(--gx-ink); }
+html.ss-touch #garage.gxT .gxSheetBtn.active { color: var(--gx-paper); background: var(--gx-ink); border-color: var(--gx-ink); }
+html.ss-touch #garage.gxT .gxSheetBtn:disabled { opacity: 0.32; cursor: default; border-style: dashed; }
+html.ss-touch #garage.gxT .gxLineupSum { flex: 0 0 auto; margin-left: 0; font-size: 12px; }
+html.ss-touch.ss-phone #garage.gxT .gxLineupSum { display: none; }
+html.ss-touch #garage.gxT .gxTurnNote { display: none; }
+html.ss-touch #garage.gxT #battleBtn {
+  flex: 0 0 auto; margin-top: auto; width: 100%; min-height: 60px; padding: 0 10px;
+  font-size: 18px; letter-spacing: 0.2em;
+}
+
+/* ---------- dock: chips, then the carousel ---------- */
+html.ss-touch #garage.gxT .gxDock { min-width: 0; padding: 0 0 var(--g-b) var(--g-l); }
+html.ss-touch #garage.gxT .gxFilters {
+  display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 8px 4px 0;
+  overflow-x: auto; overflow-y: hidden; touch-action: pan-x; scrollbar-width: none; overscroll-behavior-x: contain;
+}
+html.ss-touch #garage.gxT .gxFilters::-webkit-scrollbar { display: none; }
+html.ss-touch #garage.gxT .gxNations { flex: 0 0 auto; gap: 6px; padding: 0; }
+html.ss-touch #garage.gxT .gxNation {
+  flex: 0 0 auto; gap: 7px; padding: 0 12px; border: 1px solid var(--gx-rule2); letter-spacing: 0.1em;
+}
+html.ss-touch #garage.gxT .gxNation .gxIco { width: 18px; height: 18px; }
+html.ss-touch #garage.gxT .gxNation.active { border-color: var(--gx-ink); }
+html.ss-touch #garage.gxT .gxRail {
+  flex: 0 0 auto; flex-direction: row; gap: 6px; padding: 0 0 0 6px;
+  background: none; border-right: none; border-left: 1px solid var(--gx-rule2);
+}
+html.ss-touch #garage.gxT .gxRailBtn {
+  flex: 0 0 auto; width: auto; height: 44px; gap: 7px; padding: 0 12px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.08em; border-color: var(--gx-rule2);
+}
+html.ss-touch #garage.gxT .gxRailBtn .gxIco { width: 24px; height: 16px; }
+html.ss-touch #garage.gxT .gxResearchWrap { padding: 2px 8px 0 0; border-top: none; }
+html.ss-touch #garage.gxT .gxResearchRow {
+  gap: 8px; padding-bottom: 2px; scroll-snap-type: x mandatory; touch-action: pan-x;
+  overscroll-behavior-x: contain; scrollbar-width: none;
+}
+html.ss-touch #garage.gxT .gxResearchRow::-webkit-scrollbar { display: none; }
+/* a card is one tap target: picture left, papers right, the bar along its foot */
+html.ss-touch #garage.gxT .gxVCard {
+  flex: 0 0 200px; height: 66px; padding: 5px; scroll-snap-align: start;
+  display: grid; grid-template-columns: 76px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto;
+  column-gap: 8px; row-gap: 1px; align-items: start;
+}
+html.ss-touch #garage.gxT .gxVCard.selected { padding: 4px; }
+html.ss-touch #garage.gxT .gxVThumb { grid-row: 1 / 5; width: 76px; height: 54px; }
+html.ss-touch #garage.gxT .gxVName { font-size: 13px; min-width: 0; }
+html.ss-touch #garage.gxT .gxVMeta { justify-content: flex-start; gap: 10px; }
+html.ss-touch #garage.gxT .gxVFoot { min-height: 0; min-width: 0; overflow: hidden; white-space: nowrap; }
+html.ss-touch #garage.gxT .gxVFoot > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+html.ss-touch #garage.gxT .gxVBar { grid-column: 2; grid-row: 4; align-self: end; }
+html.ss-touch #garage.gxT .gxVCard:active { background: var(--gx-wash); }
+
+/* ---------- sheets ---------- */
+html.ss-touch #garage.gxT .gxRight { display: none; }
+html.ss-touch #garage.gxT .gxOverlay {
+  grid-column: 1 / -1; grid-row: 1 / -1; z-index: 30; border-left: none;
+  padding: 0 var(--g-r) 0 var(--g-l);
+}
+html.ss-touch #garage.gxT .gxOverlayHead {
+  min-height: calc(var(--g-top) + var(--g-t)); padding: var(--g-t) 0 0; gap: 12px;
+}
+html.ss-touch #garage.gxT .gxOverlayHead h3 { font-size: 15px; letter-spacing: 0.2em; min-width: 0; }
+html.ss-touch #garage.gxT .gxBack {
+  display: flex; align-items: center; gap: 6px; padding: 0 16px 0 10px;
+  font-family: inherit; font-size: 13px; font-weight: 700; letter-spacing: 0.14em; cursor: pointer;
+  color: var(--gx-paper); background: var(--gx-ink); border: 1px solid var(--gx-ink);
+}
+html.ss-touch #garage.gxT .gxBack .gxIco { width: 18px; height: 18px; }
+html.ss-touch #garage.gxT .gxOverlayBody {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
+  align-content: start; align-items: start; gap: 10px;
+  padding: 10px 0 calc(var(--g-b) + 10px); overscroll-behavior: contain; touch-action: pan-y;
+}
+html.ss-touch #garage.gxT .gxOverlayBody > .gxCard { min-width: 0; }
+html.ss-touch #garage.gxT .gxSheetFoot { align-self: end; display: flex; justify-content: flex-end; }
+html.ss-touch #garage.gxT .gxCardHead .gxChev { display: none; }
+html.ss-touch #garage.gxT .gxSheetGo {
+  min-height: 60px; padding: 0 44px; font-family: inherit; font-size: 18px; font-weight: 700;
+  letter-spacing: 0.2em; cursor: pointer; color: var(--gx-paper);
+  background: var(--gx-olive); border: 1px solid var(--gx-olive);
+}
+html.ss-touch #garage.gxT .gxSheetGo:active { background: var(--gx-ink); }
+html.ss-touch #garage.gxT .gxSheetGo:disabled { opacity: 0.4; }
+/* inside the sheets: chips and rows grow to finger size and wrap */
+html.ss-touch #garage.gxT .statRow label { flex: 0 0 86px; }
+html.ss-touch #garage.gxT .gxChips { gap: 6px; }
+html.ss-touch #garage.gxT .bmChip { padding: 0 14px; }
+html.ss-touch #garage.gxT .modsRow { gap: 6px; }
+html.ss-touch #garage.gxT .modChip { padding: 4px 6px; }
+html.ss-touch #garage.gxT .ammoRow { gap: 8px; padding: 3px 0; }
+html.ss-touch #garage.gxT .ammoBtn { width: 52px; height: 44px; font-size: 18px; }
+html.ss-touch #garage.gxT .ammoRow b { font-size: 15px; }
+html.ss-touch #garage.gxT .gxRow { flex-wrap: wrap; gap: 6px 10px; }
+html.ss-touch #garage.gxT .gxRow .gxName { width: auto; flex: 1 1 auto; min-width: 0; }
+html.ss-touch #garage.gxT .gxRow .gxDesc { order: 3; flex: 1 1 100%; }
+html.ss-touch #garage.gxT .gxPips i { width: 18px; height: 12px; }
+html.ss-touch #garage.gxT .gxBuy { min-width: 132px; }
+html.ss-touch #garage.gxT .gxSet { flex-wrap: wrap; gap: 4px 12px; }
+html.ss-touch #garage.gxT .gxSet label { width: auto; flex: 1 1 100%; }
+html.ss-touch #garage.gxT .gxSet input[type=range] { flex: 1 1 160px; max-width: none; min-width: 0; }
+html.ss-touch #garage.gxT .gxSet .gxDesc { flex: 1 1 100%; }
+html.ss-touch #garage.gxT .gxTargetBtn.gxNarrow { max-width: none; }
+html.ss-touch #garage.gxT .gxGfxBtns {
+  flex: 1 1 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+}
+html.ss-touch #garage.gxT .gxGfxBtns .gxPick { min-width: 0; padding: 0 4px; }
+
+/* ---------- look mode and the inspection: the stage gets the screen ---------- */
+html.ss-touch #garage.gxT.gxCollapsed .gxSide, html.ss-touch #garage.gxT.gxCollapsed .gxDock { display: none; }
+html.ss-touch #garage.gxT.gxCollapsed .gxStage { grid-column: 1 / -1; grid-row: 2 / -1; }
+html.ss-touch #garage.gxT.gxInspecting .gxTop, html.ss-touch #garage.gxT.gxInspecting .gxSide,
+html.ss-touch #garage.gxT.gxInspecting .gxDock { display: none; }
+html.ss-touch #garage.gxT.gxInspecting .gxStage {
+  grid-column: 1 / -1; grid-row: 1 / -1; z-index: 8;
+  margin: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+html.ss-touch #garage.gxT .ixClose { min-width: 44px; }
+/* portrait: the inspection's bar scrolls sideways and its papers take under
+   half the width (xray.js reads the panel's own width for its framing) */
+html.ss-touch.ss-portrait #garage.gxT .ixRoot { --ix-panel: 46vw; }
+html.ss-touch.ss-portrait #garage.gxT .ixBar {
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; touch-action: pan-x; gap: 8px;
+}
+html.ss-touch.ss-portrait #garage.gxT .ixBar::-webkit-scrollbar { display: none; }
+html.ss-touch.ss-portrait #garage.gxT .ixBar > * { flex-shrink: 0; }
+
+/* ---------- portrait: stage on top, the thumb column across the foot ---------- */
+html.ss-touch.ss-portrait #garage.gxT {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(160px, 1fr) auto auto;
+  grid-template-areas: "top" "stage" "dock" "side";
+}
+html.ss-touch.ss-portrait #garage.gxT .gxTop {
+  flex-wrap: wrap; row-gap: 4px; min-height: calc(var(--g-top) + var(--g-t)); padding-bottom: 4px; padding-top: calc(var(--g-t) + 4px);
+}
+html.ss-touch.ss-portrait #garage.gxT .gxTopL, html.ss-touch.ss-portrait #garage.gxT .gxTopR { display: contents; }
+html.ss-touch.ss-portrait #garage.gxT .gxTopR .gxGlyph { order: 2; }
+html.ss-touch.ss-portrait #garage.gxT .gxTopR .gxGlyph[data-screen="settings"] { margin-left: auto; }
+html.ss-touch.ss-portrait #garage.gxT .gxTopC { order: 3; flex: 0 0 100%; height: 0; overflow: hidden; }
+html.ss-touch.ss-portrait #garage.gxT .gxCur { order: 4; }
+html.ss-touch.ss-portrait #garage.gxT .gxSide {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; overflow: visible;
+  padding: 8px var(--g-r) var(--g-b) var(--g-l); border-left: none; border-top: 1px solid var(--gx-rule2);
+}
+html.ss-touch.ss-portrait #garage.gxT .gxSheetNav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+html.ss-touch.ss-portrait #garage.gxT .gxTurnNote {
+  display: block; font-size: 12px; letter-spacing: 0.06em; color: var(--gx-ink2); text-align: center;
+}
+html.ss-touch.ss-portrait #garage.gxT #battleBtn { margin-top: 0; }
+html.ss-touch.ss-portrait #garage.gxT .gxDock { padding-right: var(--g-r); padding-bottom: 0; }
+html.ss-touch.ss-portrait #garage.gxT.gxCollapsed .gxStage { grid-row: 2 / -1; }
+
+/* ---------- a tall screen (tablet): bigger cards with the picture on top ---------- */
+@media (min-height: 600px) {
+  html.ss-touch #garage.gxT { --g-top: 56px; }
+  html.ss-touch #garage.gxT .gxVCard {
+    flex: 0 0 176px; height: auto; display: flex; flex-direction: column; gap: 3px;
+  }
+  html.ss-touch #garage.gxT .gxVThumb { width: 100%; height: 84px; }
+  html.ss-touch #garage.gxT .gxVBar { align-self: stretch; }
+  html.ss-touch #garage.gxT .gxHeroName { font-size: 24px; }
+}
+
+/* ---------- wave 6: the crew-station tag (vehicles/interior/index.js) ---------- */
+#stationTag {
+  position: absolute; left: 50%; bottom: 52px; transform: translateX(-50%);
+  z-index: 11; pointer-events: none; white-space: nowrap;
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 3px 10px; background: rgba(14, 15, 12, 0.62); border: 1px solid rgba(233, 228, 212, 0.35);
+  font-family: 'Bahnschrift', 'DIN Alternate', 'Roboto Condensed', 'Arial Narrow', 'Segoe UI', sans-serif;
+  color: #e9e4d2; font-size: 12px; letter-spacing: 0.08em;
+  text-shadow: 1px 0 0 rgba(0,0,0,0.85), -1px 0 0 rgba(0,0,0,0.85), 0 1px 0 rgba(0,0,0,0.85), 0 -1px 0 rgba(0,0,0,0.85);
+}
+#stationTag b { font-weight: 700; color: #ffd9a0; }
+#stationTag span { opacity: 0.85; }
+#stationTag i { font-style: normal; opacity: 0.6; font-size: 11px; }
+html.ss-touch #stationTag i { display: none; }
+/* a phone has no room for it: the lit CREW button says a station is up */
+html.ss-phone #stationTag { display: none; }
+

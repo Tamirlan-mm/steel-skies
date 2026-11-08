@@ -29,6 +29,12 @@ const SENS_ROWS = [
   ['sensAir', 'AIRCRAFT MOUSE AIM', 'The mouse-aim marker the aircraft flies toward, and the cockpit look.'],
   ['sensAirZoom', 'AIRCRAFT AIM ZOOM', 'While the aim zoom (RMB) is held.'],
 ];
+const TOUCH_SENS_DESC = {
+  sensTank: 'Turret and camera, dragging in third-person view.',
+  sensTankZoom: 'Dragging inside the gun sight (SIGHT). The game already slows it with the zoom.',
+  sensAir: 'The aim marker the aircraft flies toward, and the cockpit look.',
+  sensAirZoom: 'While the aim zoom is on.',
+};
 const SENS_RESET = ['sensTank', 'sensTankZoom', 'sensAir', 'sensAirZoom', 'invertYTank', 'invertYAir'];
 const GROUP_TITLE = { tank: 'Tank', air: 'Aircraft', common: 'Common' };
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -84,7 +90,15 @@ const SCREEN_TITLE = {
   settings: 'SETTINGS',
   community: 'COMMUNITY',
   help: 'CONTROLS',
+  // mobile menu (wave 6): full-screen sheets that only the touch layout opens
+  mode: 'BATTLE MODE',
+  details: 'VEHICLE',
+  research: 'RESEARCH',
 };
+// The screens a respawn picker may still open on touch: they only look, or
+// spend on the vehicle about to be fielded (the desktop shows the same
+// cards in its right column during a respawn).
+const TOUCH_RESPAWN_OK = ['vehicles', 'details', 'research'];
 
 // Screens that take over the stage. 'vehicles' is the hangar itself.
 const OVERLAY_SCREENS = Object.keys(SCREEN_TITLE);
@@ -132,6 +146,11 @@ const ICON = {
   xray: svg('0 0 16 16', '<path d="M1.5 1.5h4.2v1.6H3.1v2.6H1.5zM10.3 1.5h4.2v4.2h-1.6V3.1h-2.6zM1.5 10.3h1.6v2.6h2.6v1.6H1.5zM12.9 10.3h1.6v4.2h-4.2v-1.6h2.6z"/><path d="M8 4.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zm0 1.5a1.9 1.9 0 1 1 0 3.8 1.9 1.9 0 0 1 0-3.8z"/>'),
   // a plate in section: protection
   shield: svg('0 0 16 16', '<path d="M8 1 2.2 3.1v4.3c0 3.5 2.4 6.3 5.8 7.6 3.4-1.3 5.8-4.1 5.8-7.6V3.1zm0 1.8 4.2 1.4v3.2c0 2.6-1.7 4.8-4.2 5.9z"/>'),
+  // mobile menu sheet buttons: a spec sheet, a branching tree, a list
+  sheet: svg('0 0 16 16', '<path d="M3 1h10v14H3zm1.6 1.6v10.8h6.8V2.6z"/><path d="M5.8 4.4h4.4v1.4H5.8zm0 2.8h4.4v1.4H5.8zm0 2.8h3v1.4h-3z"/>'),
+  tree: svg('0 0 16 16', '<path d="M6 1h4v3.4H8.7v2.2h4.1v2.8H14V13h-3.6V9.4h1V8H4.6v1.4h1V13H2V9.4h1.2V6.6h4.1V4.4H6z"/>'),
+  lineup: svg('0 0 16 16', '<path d="M1.5 2.5h2.4v2.4H1.5zm4 .5h9v1.5h-9zM1.5 6.8h2.4v2.4H1.5zm4 .5h9v1.5h-9zm-4 3.8h2.4v2.4H1.5zm4 .5h9v1.5h-9z"/>'),
+  back: svg('0 0 16 16', '<path d="M10.6 2.2 11.9 3.5 7.4 8l4.5 4.5-1.3 1.3L4.8 8z"/>'),
 };
 
 // Generic national markings — a roundel, a bar cross and a star, drawn from
@@ -179,7 +198,14 @@ export class Garage {
     this.hangarKey = ''; // last vehicle handed to it, so we do not reload it
     this.hangarRunning = false;
     this.disposed = false;
+    // mobile menu (wave 6): core/touch.js puts ss-touch / ss-phone on <html>
+    // before main.js builds this menu. A touch device gets its own layout
+    // (touchSkeleton); a desktop never takes a single branch of it.
+    const html = typeof document !== 'undefined' ? document.documentElement : null;
+    this.touch = !!(html && html.classList.contains('ss-touch'));
+    this.phone = this.touch && html.classList.contains('ss-phone');
     this.root.classList.add('gx');
+    if (this.touch) this.root.classList.add('gxT');
     this.buildSkeleton();
   }
 
@@ -229,8 +255,82 @@ export class Garage {
   // skeleton
   // ---------------------------------------------------------------------------
 
+  // mobile menu (wave 6): the touch layout. Every id the shared render code
+  // writes into exists here too, so render()/refresh() run unchanged; what
+  // differs is where things sit:
+  //   top bar   — look toggle, TANKS / PLANES, balances, settings, help
+  //   stage     — the 3D hangar (one-finger orbit, pinch zoom), name over it
+  //   side      — the thumb column: mode selector, the six sheets, TO BATTLE
+  //   dock      — nation and class chips, the vehicle carousel
+  //   sheets    — #gxOverlay full screen with a BACK button (mode, vehicle,
+  //               research, crew, lineup, settings, help); X-RAY and
+  //               PROTECTION take the whole screen with their own back button
+  touchSkeleton() {
+    const sheetBtn = (attr, icon, label) =>
+      `<button class="gxSheetBtn" ${attr}>${icon}<span>${label}</span></button>`;
+    return `
+      <header class="gxTop">
+        <div class="gxTopL">
+          <button class="gxGlyph" data-act="collapse" id="gxCollapseBtn" aria-label="Hide the panels and look at the vehicle">${ICON.collapse}</button>
+          <div class="gxFam">
+            <button class="modeTab" data-modetab="ground">TANKS</button>
+            <button class="modeTab" data-modetab="air">PLANES</button>
+          </div>
+        </div>
+        <div class="gxTopC"><small id="garageSubtitle">Select your vehicle</small></div>
+        <div class="gxTopR">
+          <span class="gxCur" id="balSilver"></span>
+          <span class="gxCur" id="balRp"></span>
+          <span class="gxCur" id="balCrew"></span>
+          <button class="gxGlyph" data-screen="settings" aria-label="Settings">${ICON.gear}</button>
+          <button class="gxGlyph" data-screen="help" aria-label="Controls">${ICON.help}</button>
+        </div>
+      </header>
+
+      <section class="gxStage" id="gxStage">
+        <canvas id="hangarCanvas"></canvas>
+        <div class="gxHero" id="gxHero"></div>
+      </section>
+
+      <aside class="gxSide">
+        <button class="gxModeBtn" data-screen="mode">
+          <small>BATTLE MODE</small><b id="gxModeName">—</b><span id="gxModeStrip"></span>
+        </button>
+        <div class="gxSheetNav">
+          ${sheetBtn('data-screen="details"', ICON.sheet, 'VEHICLE')}
+          ${sheetBtn('data-screen="research"', ICON.tree, 'RESEARCH')}
+          ${sheetBtn('data-screen="crew"', ICON.crew, 'CREW')}
+          ${sheetBtn('data-screen="lineup"', ICON.lineup, 'LINEUP')}
+          ${sheetBtn('data-inspect="xray"', ICON.xray, 'X-RAY')}
+          ${sheetBtn('data-inspect="armour"', ICON.shield, 'ARMOUR')}
+        </div>
+        <div class="gxLineupSum" id="gxLineupSum"></div>
+        <div class="gxTurnNote">Battles are played in landscape — turn the device sideways.</div>
+        <button id="battleBtn">TO BATTLE</button>
+      </aside>
+
+      <aside class="gxRight" id="gxRight"></aside>
+
+      <div class="gxOverlay hidden" id="gxOverlay">
+        <div class="gxOverlayHead">
+          <button class="gxBack" data-act="closeoverlay">${ICON.back}<span>BACK</span></button>
+          <h3 id="gxOverlayTitle">CREW</h3>
+        </div>
+        <div class="gxOverlayBody" id="gxOverlayBody"></div>
+      </div>
+
+      <footer class="gxDock">
+        <div class="gxFilters">
+          <div class="gxNations" id="gxNations"></div>
+          <nav class="gxRail" id="gxRail"></nav>
+        </div>
+        <div class="gxResearchWrap"><div class="gxResearchRow" id="gxResearchRow"></div></div>
+      </footer>
+    `;
+  }
+
   buildSkeleton() {
-    this.root.innerHTML = `
+    this.root.innerHTML = this.touch ? this.touchSkeleton() : `
       <header class="gxTop">
         <div class="gxTopL">
           <button class="gxGlyph" data-act="collapse" title="Hide the panels and look at the vehicle">${ICON.menu}</button>
@@ -331,6 +431,15 @@ export class Garage {
 
   buildRail() {
     const rail = this.root.querySelector('#gxRail');
+    if (this.touch) {
+      // touch: the class filters are labelled chips in the dock's chip strip
+      // (the look toggle lives in the top bar)
+      rail.innerHTML = CLASS_FILTERS
+        .map((c) => `<button class="gxRailBtn gxClassBtn" data-class="${c.id}"
+          aria-label="${c.label} — show only these">${CLASS_ICON[c.id]}<span>${c.label}</span></button>`)
+        .join('');
+      return;
+    }
     const filters = CLASS_FILTERS
       .map((c) => `<button class="gxRailBtn gxClassBtn" data-class="${c.id}"
         title="${c.label} — show only these">${CLASS_ICON[c.id]}</button>`)
@@ -365,13 +474,16 @@ export class Garage {
         const Ctor = mod && mod.Hangar3D;
         if (!Ctor || this.disposed) return;
         this.hangar = new Ctor(canvas);
+        // mobile menu: a phone's stage never draws past 1 CSS-px ratio, a
+        // tablet's past 1.5 (the battle renderer's own touch cap)
+        if (this.touch) this.callHangar('setDeviceCap', this.phone ? 1 : 1.5);
         // the player's GRAPHICS QUALITY choice; AUTO keeps the old guess (a
         // machine with few cores is usually a machine with a weak GPU too)
         this.callHangar('setQuality', this.hangarTier());
         this.syncHangarLens();
         this.hangarKey = '';
         this.syncHangar();
-        if (!this.root.classList.contains('hidden')) this.startHangar();
+        if (this.stageWanted()) this.startHangar();
       })
       .catch(() => {
         // no hangar module, or it threw on load: the stage stays empty
@@ -386,6 +498,13 @@ export class Garage {
     } catch {
       return null;
     }
+  }
+
+  // The stage draws while the menu is up, except under a touch sheet, which
+  // covers it whole (the desktop's overlays leave half of it in view).
+  stageWanted() {
+    if (this.root.classList.contains('hidden')) return false;
+    return !(this.touch && OVERLAY_SCREENS.includes(this.screen));
   }
 
   startHangar() {
@@ -694,6 +813,9 @@ export class Garage {
         foot = `<span class="gxVOwned">${s.id === selected ? 'IN BATTLE' : 'IN HANGAR'}</span>`;
       } else if (!researchable) {
         foot = `<span class="gxVLock">${ICON.lock}${esc(progress.researchBlockedBy(s) || 'LOCKED')}</span>`;
+      } else if (this.touch) {
+        // touch: a card is one big tap target; research lives in its sheet
+        foot = `<span class="gxVCost">${isTarget ? '★ ' : ''}${fmt(progress.researchRemaining(s))} RP</span>`;
       } else {
         foot = `<span class="gxVCost">${fmt(s.price.silver)} ⛁ · ${fmt(progress.researchRemaining(s))} RP</span>
           <button class="gxVAct${isTarget ? ' active' : ''}" data-target="${s.id}"
@@ -745,11 +867,13 @@ export class Garage {
     </div>`;
   }
 
-  renderRight() {
-    const col = this.root.querySelector('#gxRight');
+  // The right column's cards, by name, in the column's order. The desktop
+  // joins them all into #gxRight; the touch layout deals them out to its
+  // sheets (mode / details / research).
+  rightCards() {
     const s = this.viewedSpec();
     const mode = this.mode;
-    const cards = [];
+    const cards = {};
 
     // ---- current battle ----
     const battleSpec = this.battleSpec();
@@ -762,7 +886,7 @@ export class Garage {
     const diffChips = ['arcade', 'realistic']
       .map((d) => `<button class="bmChip diffChip" data-diff="${d}"${this.respawnLock ? ' disabled' : ''}>${d.toUpperCase()}</button>`)
       .join('');
-    cards.push(this.card('CURRENT BATTLE', `
+    cards.battle = (this.card('CURRENT BATTLE', `
       <div class="gxBattleLine"><b>${MODE_LABEL[this.battleMode]} ${DIFF_LABEL[diff]}</b></div>
       <div class="gxHint">Matchmaking bracket BR ${bracket.label}${this.respawnLock ? ' · locked for this battle' : ''}</div>
       <div class="gxChips">${modeChips}</div>
@@ -770,11 +894,11 @@ export class Garage {
     .map((m) => `<button class="bmChip mapChip" data-map="${m}"${this.respawnLock ? ' disabled' : ''}>${MAP_CHIP[m]}</button>`)
     .join('')}</div>` : ''}
       <div class="gxChips">${diffChips}</div>`,
-    { act: this.respawnLock ? null : 'cyclemode', title: 'Click to cycle the battle mode' }));
+    { act: this.respawnLock || this.touch ? null : 'cyclemode', title: 'Click to cycle the battle mode' }));
 
     if (s) {
       // ---- the vehicle itself ----
-      cards.push(this.card('VEHICLE', `
+      cards.vehicle = (this.card('VEHICLE', `
         <div class="gxCardTitle">${esc(s.name)}</div>
         ${this.badgeRow(s)}
         ${this.statRows(s, mode)}`));
@@ -798,13 +922,13 @@ export class Garage {
       } else {
         researchBody = `<div class="gxHint">No research target. Pick a locked vehicle in the row below and press RESEARCH — three quarters of every battle's RP goes into it, and the rest stays free for modifications.</div>`;
       }
-      cards.push(this.card('RESEARCH', researchBody));
+      cards.research = (this.card('RESEARCH', researchBody));
 
       // ---- crew ----
       const crewLvl = progress.crewTotalLevel(s.id);
       const maxLvl = CREW_SKILLS.length * CREW_MAX_LEVEL;
       const qual = progress.crewQual(s.id);
-      cards.push(this.card('CREW', `
+      cards.crew = (this.card('CREW', `
         <div class="gxCardTitle">CREW ${crewLvl} / ${maxLvl}</div>
         <div class="gxBar"><div style="width:${statPct(crewLvl / maxLvl)}%;background:var(--gx-green)"></div></div>
         <div class="gxHint">${CREW_QUALS[qual].name} qualification · ${fmt(progress.data.crewXp)} Crew XP unspent</div>`,
@@ -823,24 +947,34 @@ export class Garage {
           total += defs.length;
           for (const m of defs) if (has.includes(m.id)) installed++;
         }
-        cards.push(this.card('MODIFICATIONS', `
+        cards.mods = (this.card('MODIFICATIONS', `
           <div class="gxBar"><div style="width:${total ? Math.round((installed / total) * 100) : 0}%"></div></div>
           <div class="gxHint">${installed} of ${total} installed — each tier opens once the one above it is deep enough.</div>
           ${this.modsRow(s, mode)}`, { note: `${installed}/${total}` }));
 
         if (mode === 'air') {
-          cards.push(this.card('LOADOUT', `
+          cards.loadout = (this.card('LOADOUT', `
             <div class="gxHint">Bombs and rockets cost speed and need their module researched first.</div>
             ${this.loadoutRow(s)}`));
         } else if (s.ammoCap) {
-          cards.push(this.card('AMMUNITION', `
+          cards.loadout = (this.card('AMMUNITION', `
             <div class="gxHint">Distribute ${s.ammoCap} rounds. You pay for what you fire, not what you carry.</div>
             ${this.ammoRows(s)}`));
         }
       }
     }
 
-    col.innerHTML = cards.join('');
+    return cards;
+  }
+
+  renderRight() {
+    const col = this.root.querySelector('#gxRight');
+    // touch: the column is not shown; its cards are drawn by the sheets
+    if (this.touch) {
+      col.innerHTML = '';
+      return;
+    }
+    col.innerHTML = Object.values(this.rightCards()).join('');
   }
 
   // -------------------------------------------------------------------------
@@ -862,7 +996,31 @@ export class Garage {
     else if (this.screen === 'lineup') this.renderLineup(body);
     else if (this.screen === 'settings') this.renderSettings(body);
     else if (this.screen === 'community') this.renderCommunity(body);
-    else this.renderHelp(body);
+    else if (this.screen === 'mode' || this.screen === 'details' || this.screen === 'research') {
+      this.renderTouchSheet(body);
+    } else this.renderHelp(body);
+  }
+
+  // mobile menu: the three sheets the desktop's right column becomes
+  renderTouchSheet(panel) {
+    const c = this.rightCards();
+    const s = this.viewedSpec();
+    let html = '';
+    if (this.screen === 'mode') {
+      html = `${c.battle || ''}
+        <div class="gxSheetFoot"><button class="gxSheetGo" data-act="battle"${this.respawnLock ? ' disabled' : ''}>${esc(this.buttonLabel)}</button></div>`;
+    } else if (this.screen === 'details') {
+      html = (c.vehicle || '') + (c.mods || '') + (c.loadout || '');
+      if (s && !progress.isOwned(s.id)) {
+        html += `<div class="gxCard"><div class="gxCardHead"><span>MODIFICATIONS</span></div>
+          <div class="gxCardBody"><div class="gxHint">Research and buy the ${esc(s.name)} to fit modifications and choose its ammunition.</div>
+          <button class="gxTargetBtn gxNarrow" data-screen="research">OPEN RESEARCH</button></div></div>`;
+      }
+    } else {
+      html = (c.research || '').replace('in the row below and press RESEARCH',
+        'in the carousel and press RESEARCH THIS in this sheet');
+    }
+    panel.innerHTML = html || '<div class="gxEmpty">Nothing to show.</div>';
   }
 
   crewSubject() {
@@ -1033,7 +1191,7 @@ export class Garage {
         </div>
       </div>
       ${this.mouseCardHtml()}
-      ${this.controlsCardHtml()}
+      ${this.touch ? '' : this.controlsCardHtml()}
       <div class="gxCard">
         <div class="gxCardHead"><span>SERVICE RECORD</span></div>
         <div class="gxCardBody">
@@ -1064,6 +1222,10 @@ export class Garage {
   // guess — few cores, light stage.
   hangarTier() {
     const c = this.gfxChoice();
+    // mobile menu: a phone's stage is always the light one (the battle keeps
+    // the player's choice); a tablet's AUTO is medium, and never above it
+    if (this.phone) return 'low';
+    if (this.touch) return c === 'low' ? 'low' : 'medium';
     if (c !== 'auto') return c;
     const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 8;
     return cores <= 4 ? 'low' : 'high';
@@ -1107,7 +1269,8 @@ export class Garage {
             </div>
           </div>
           <div class="gxHint gxGfxDesc">${GFX_DETAIL[choice] || ''}${autoNote}
-          Applies to the hangar now and to the next battle; the pause screen has the same switch.</div>${scaleRow}
+          Applies to the hangar now and to the next battle; the pause screen has the same switch.${this.phone
+    ? ' On a phone the hangar stage itself always draws at LOW, 1x pixels.' : ''}</div>${scaleRow}
         </div>
       </div>`;
   }
@@ -1115,8 +1278,11 @@ export class Garage {
   // ---- settings lane: MOUSE -----------------------------------------------
   mouseCardHtml() {
     const s = progress.settings || {};
-    const rows = SENS_ROWS.map(([key, label, desc]) => {
+    const rows = SENS_ROWS.map(([key, label, desc0]) => {
       const v = Number.isFinite(Number(s[key])) ? Number(s[key]) : 1;
+      // touch: the same four scales carry the look drag (core/touch.js feeds
+      // input.addLook, which these multiply)
+      const desc = this.touch ? (TOUCH_SENS_DESC[key] || desc0) : desc0;
       return `
           <div class="gxSet gxSetWrap">
             <label>${label}</label>
@@ -1131,18 +1297,19 @@ export class Garage {
           <div class="gxSet gxSetWrap">
             <label>${label}</label>
             <button class="gxToggle${on ? ' on' : ''}" data-act="toggleinv" data-key="${key}" aria-pressed="${on}">${on ? 'INVERTED' : 'NORMAL'}</button>
-            <span class="gxDesc">Mouse forward ${on ? 'looks down' : 'looks up'}.</span>
+            <span class="gxDesc">${this.touch ? 'Dragging up' : 'Mouse forward'} ${on ? 'looks down' : 'looks up'}.</span>
           </div>`;
     };
     return `
       <div class="gxCard gxSettingsCard">
-        <div class="gxCardHead"><span>MOUSE</span></div>
+        <div class="gxCardHead"><span>${this.touch ? 'TOUCH LOOK' : 'MOUSE'}</span></div>
         <div class="gxCardBody">
-          <div class="gxHint">1.00x is the game's own feel. Lower is slower, higher is faster.</div>
+          <div class="gxHint">1.00x is the game's own feel. Lower is slower, higher is faster.${this.touch
+    ? ' On a touch screen these scale the look drag: a finger anywhere off the stick and the buttons.' : ''}</div>
           ${rows}
           ${inv('invertYTank', 'INVERT Y — TANK')}
           ${inv('invertYAir', 'INVERT Y — AIRCRAFT')}
-          <button class="gxTargetBtn gxNarrow" data-act="resetsens">RESET MOUSE</button>
+          <button class="gxTargetBtn gxNarrow" data-act="resetsens">${this.touch ? 'RESET LOOK' : 'RESET MOUSE'}</button>
         </div>
       </div>`;
   }
@@ -1323,7 +1490,17 @@ export class Garage {
   }
 
   renderHelp(panel) {
-    const rows = [
+    const rows = this.touch ? [
+      ['Left thumb', 'Floating stick: throttle and steering, or roll and pitch in the air'],
+      ['Drag', 'Anywhere else: aim the turret, or steer the aim marker'],
+      ['Pinch', 'Camera zoom; + and − do the same in steps'],
+      ['FIRE · MG', 'Hold to fire; a drag that starts on them also aims'],
+      ['SIGHT', 'Gun sight (tanks)'],
+      ['AP · HE', 'Select shell type'],
+      ['MAP · SCORE', 'Tactical map, scoreboard'],
+      ['❚❚', 'Pause'],
+      ['Hangar', 'Drag the vehicle to turn it, pinch to zoom; swipe the carousel'],
+    ] : [
       ['W / S', 'Throttle — forward and back'],
       ['A / D', 'Steer, or roll in the air'],
       ['Mouse', 'Aim · LMB fires the main gun'],
@@ -1425,7 +1602,7 @@ export class Garage {
       return;
     }
     if ((el = t.closest('[data-screen]'))) {
-      if (this.respawnLock && el.dataset.screen !== 'vehicles') return;
+      if (this.respawnLock && !this.respawnScreenOk(el.dataset.screen)) return;
       this.setScreen(el.dataset.screen);
       return;
     }
@@ -1481,7 +1658,22 @@ export class Garage {
     if ((el = t.closest('[data-act]'))) this.doAct(el.dataset.act, el);
   }
 
+  // during a respawn the only screen that means anything is the hangar (and,
+  // on touch, the sheets that stand in for the desktop's right column)
+  respawnScreenOk(screen) {
+    return screen === 'vehicles' || (this.touch && TOUCH_RESPAWN_OK.includes(screen));
+  }
+
   doAct(act, el = null) {
+    if (act === 'battle') {
+      // the mode sheet's own TO BATTLE (touch)
+      if (this.respawnLock) return;
+      // back from the battle to the hangar, not to this sheet
+      this.screen = 'vehicles';
+      this.renderOverlay();
+      this.root.querySelector('#battleBtn')?.click();
+      return;
+    }
     if (act.startsWith('screen:')) {
       if (this.respawnLock) return;
       this.setScreen(act.slice(7));
@@ -1620,7 +1812,7 @@ export class Garage {
     }
     this.screen = screen;
     this.render();
-    if (!this.root.classList.contains('hidden')) this.startHangar();
+    if (this.stageWanted()) this.startHangar();
   }
 
   // -------------------------------------------------------------------------
@@ -1639,6 +1831,20 @@ export class Garage {
     q('#gxModeStrip').textContent =
       `${MODE_LABEL[this.battleMode]} ${DIFF_LABEL[progress.getDifficulty()]} Battles · BR ${brLabel(br)}`;
     q('#gxModeStrip').title = `Matchmaking bracket ${brBracket(br).label}`;
+    if (this.touch) {
+      // the thumb column's mode selector names the mode as its chip does
+      const name = q('#gxModeName');
+      if (name) name.textContent = MODE_CHIP[this.battleMode] || '';
+      q('#gxModeStrip').textContent = `${DIFF_LABEL[progress.getDifficulty()]} · BR ${brLabel(br)}${
+        MAP_MODES.includes(this.battleMode) ? ` · ${MAP_CHIP[getMapChoice()] || ''}` : ''}`;
+      const mb = q('.gxModeBtn');
+      if (mb) mb.disabled = this.respawnLock;
+      const sheet = OVERLAY_SCREENS.includes(this.screen);
+      this.root.classList.toggle('gxSheetOpen', sheet);
+      // a full-screen sheet hides the stage: let the GPU rest under it
+      if (sheet) this.stopHangar();
+      else if (this.stageWanted()) this.startHangar();
+    }
     q('#garageSubtitle').textContent = this.subtitle;
     q('#battleBtn').textContent = this.buttonLabel;
 
@@ -1657,7 +1863,7 @@ export class Garage {
       btn.classList.toggle('active', !this.inspector && (s === this.screen ||
         (s === 'vehicles' && !OVERLAY_SCREENS.includes(this.screen))));
       // during a respawn the only screen that means anything is the hangar
-      btn.disabled = this.respawnLock && s !== 'vehicles';
+      btn.disabled = this.respawnLock && !this.respawnScreenOk(s);
     });
     // inspection: looking costs nothing, so it stays open during a respawn too;
     // aircraft have no armour plate to analyse
@@ -1726,10 +1932,15 @@ export class Garage {
     this.render();
     const row = this.root.querySelector('#gxResearchRow');
     if (row) row.scrollLeft = 0;
+    // touch: the carousel opens on the vehicle you are taking into battle
+    if (row && this.touch) {
+      const sel = row.querySelector('.gxVCard.selected');
+      if (sel) row.scrollLeft = Math.max(0, sel.offsetLeft - row.offsetLeft - 8);
+    }
     // settings may have changed elsewhere (the pause screen) since last time
     this.syncHangarLens();
     this.callHangar('setQuality', this.hangarTier());
-    this.startHangar();
+    if (this.stageWanted()) this.startHangar();
   }
 
   hide() {

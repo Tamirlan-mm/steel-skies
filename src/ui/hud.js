@@ -718,6 +718,7 @@ const TOUCH_HELP_TANK =
   '<span>Left stick — drive · Drag — aim the gun</span>' +
   '<span>FIRE — main gun · MG — machine gun (drag on either aims too)</span>' +
   '<span>SIGHT — gunner sight · + / − — sight zoom · pinch — zoom</span>' +
+  '<span>CREW — next crew station (then back to the outside view)</span>' +
   '<span>AP / HE chips — shell · REPAIR (hold) · EXT · SMOKE · AID</span>' +
   '<span>❚❚ — pause · MAP — tactical map · ⏏ (hold) — abandon</span>';
 const TOUCH_HELP_ARTY = '<span>ART — artillery strike</span>';
@@ -1289,9 +1290,14 @@ export class HUD {
     // the centre dot is the real 2 mrad (H-03: <= 2 mrad), however few pixels
     // that is; it is drawn additively, so even ~1.3 px reads as a point of light
     const dot = angleToPx(REFLECTOR.dotMrad / 1000, fov, H);
-    this.reflector = { x, y, r, dot, fov, gunSpeed };
+    // wave 6 cockpit framework: the type's own graticule (cockpit/<id>.js
+    // gunsight.type): 'k14' six diamonds round the pipper, 'gm2' the ring
+    // with range bars, anything else the ring and broken cross (Revi, PBP,
+    // Type 98 — the H-03 default)
+    const grat = opts && typeof opts.graticule === 'string' ? opts.graticule : 'revi';
+    this.reflector = { x, y, r, dot, fov, gunSpeed, graticule: grat };
     const q = (v) => Math.round(v * 4) / 4;
-    const key = `${q(r)}|${q(dot)}`;
+    const key = `${q(r)}|${q(dot)}|${grat}`;
     if (key !== this._reflKey) {
       this._reflKey = key;
       const s = Math.ceil(r * 2 + 24);
@@ -1301,13 +1307,37 @@ export class HUD {
       el.__svg.setAttribute('width', String(s));
       el.__svg.setAttribute('height', String(s));
       el.__svg.setAttribute('viewBox', `0 0 ${s} ${s}`);
-      el.__svg.innerHTML =
-        `<circle cx="${c}" cy="${c}" r="${r.toFixed(2)}" fill="none" stroke="${col}" stroke-width="1.6"/>` +
-        `<circle cx="${c}" cy="${c}" r="${(dot / 2).toFixed(2)}" fill="${col}"/>` +
-        // the cross broken round the dot, as on the period graticules
-        `<path d="M${c - r - tick} ${c}H${c - r + tick}M${c + r - tick} ${c}H${c + r + tick}` +
-        `M${c} ${c - r - tick}V${c - r + tick}M${c} ${c + r - tick}V${c + r + tick}" ` +
-        `stroke="${col}" stroke-width="1.6" fill="none"/>`;
+      if (grat === 'k14') {
+        let pips = '';
+        const pd = Math.max(2.5, r * 0.08);
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          const px = c + Math.sin(a) * r;
+          const py = c - Math.cos(a) * r;
+          pips += `M${(px - pd).toFixed(2)} ${py.toFixed(2)}L${px.toFixed(2)} ${(py - pd).toFixed(2)}` +
+            `L${(px + pd).toFixed(2)} ${py.toFixed(2)}L${px.toFixed(2)} ${(py + pd).toFixed(2)}Z`;
+        }
+        el.__svg.innerHTML =
+          `<path d="${pips}" fill="${col}"/>` +
+          `<circle cx="${c}" cy="${c}" r="${Math.max(1, dot / 2).toFixed(2)}" fill="${col}"/>`;
+      } else if (grat === 'gm2') {
+        el.__svg.innerHTML =
+          `<circle cx="${c}" cy="${c}" r="${r.toFixed(2)}" fill="none" stroke="${col}" stroke-width="1.6"/>` +
+          `<circle cx="${c}" cy="${c}" r="${(dot / 2).toFixed(2)}" fill="${col}"/>` +
+          // the range bars either side and the cross through the ring
+          `<path d="M${c - r - tick * 1.6} ${c}H${c - r * 0.25}M${c + r * 0.25} ${c}H${c + r + tick * 1.6}` +
+          `M${c} ${c - r - tick}V${c - r * 0.25}M${c} ${c + r * 0.25}V${c + r + tick}` +
+          `M${c - r * 0.55} ${c - r * 0.35}V${c + r * 0.35}M${c + r * 0.55} ${c - r * 0.35}V${c + r * 0.35}" ` +
+          `stroke="${col}" stroke-width="1.4" fill="none"/>`;
+      } else {
+        el.__svg.innerHTML =
+          `<circle cx="${c}" cy="${c}" r="${r.toFixed(2)}" fill="none" stroke="${col}" stroke-width="1.6"/>` +
+          `<circle cx="${c}" cy="${c}" r="${(dot / 2).toFixed(2)}" fill="${col}"/>` +
+          // the cross broken round the dot, as on the period graticules
+          `<path d="M${c - r - tick} ${c}H${c - r + tick}M${c + r - tick} ${c}H${c + r + tick}` +
+          `M${c} ${c - r - tick}V${c - r + tick}M${c} ${c + r - tick}V${c + r + tick}" ` +
+          `stroke="${col}" stroke-width="1.6" fill="none"/>`;
+      }
       el.__svg.style.marginLeft = `${-c}px`;
       el.__svg.style.marginTop = `${-c}px`;
       // the reflector glass: a little wider than the ring, as the combiner was

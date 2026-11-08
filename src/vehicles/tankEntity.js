@@ -1544,6 +1544,11 @@ export class Tank {
   // couple of seconds whether or not anything broke.
   addShake(amount = 1) {
     this.shake = Math.min(0.02, this.shake + DISP_SHAKE * amount);
+    // wave 6 interior events: every hit that rings the hull comes through
+    // here. onInteriorEvent(type, a, b) is set only on the player's tank
+    // (vehicles/interior/index.js): 'hit' (amount) | 'pen' (world point,
+    // world dir) | 'fire'. Never a hit-result event string.
+    if (this.onInteriorEvent) this.onInteriorEvent('hit', amount);
   }
 
   updateRecoil(dt) {
@@ -1719,6 +1724,7 @@ export class Tank {
     events.push('Penetration');
     this.maybeTrackHit(hit, events);
     this.addShake(1.4);
+    if (this.onInteriorEvent) this.onInteriorEvent('pen', hit.point, hit.dir);
     this.cancelRepair('damage');
     const res = this.resolvePenetration(
       hit.point, hit.dir, effPen - effArmor, kind, events, shell.caliber || 75,
@@ -2497,6 +2503,7 @@ export class Tank {
     this.fpeDelay =
       this.spec.fireExtinguisher && this.consumables.fpe > 0 ? FPE_AUTO : 0;
     events.push('Fire started');
+    if (this.onInteriorEvent) this.onInteriorEvent('fire');
   }
 
   breakModule(key) {

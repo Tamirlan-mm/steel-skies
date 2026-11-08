@@ -42,8 +42,11 @@ export const ACTIONS = [
   { code: 'KeyQ', air: 'Rudder left' },
   { code: 'KeyE', air: 'Rudder right' },
   { code: 'KeyB', air: 'Airbrake / wheel brakes' },
-  { code: 'KeyX', air: 'Fire extinguisher' },
-  { code: 'KeyC', air: 'Radiator auto / manual (open, combined arms)' },
+  // wave 6 crew stations (vehicles/interior): C steps through the seats
+  // (commander, driver, loader, bow gunner, gunner, then the outside view),
+  // X goes straight back to the third-person view
+  { code: 'KeyX', tank: 'Third-person view (leave the station)', air: 'Fire extinguisher' },
+  { code: 'KeyC', tank: 'Crew station (cycle)', air: 'Radiator auto / manual (open, combined arms)' },
   { code: 'KeyZ', air: 'Radiator close (combined arms)' },
   { code: 'BracketLeft', air: 'Radiator close (manual)' },
   { code: 'BracketRight', air: 'Radiator open (manual)' },

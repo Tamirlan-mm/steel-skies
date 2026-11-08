@@ -1785,6 +1785,7 @@ export class AirBattle {
     st.dist = this.camDist;
     st.shake = this.shake;
     st.cockpit = !!this.cockpit && p.alive;
+    st.scene = this.scene; // wave 6: the per-type cockpit layer
     // keyboard flying: the raw aim follows the nose this frame's physics left
     // (strength from updatePlayerControls; a dead pilot's aim is left alone)
     if (p.alive) cam.followNose(dt, p, this.followStrength || 0);
@@ -1902,7 +1903,7 @@ export class AirBattle {
         (g.x * 0.5 + 0.5) * window.innerWidth,
         (-g.y * 0.5 + 0.5) * window.innerHeight,
         g.z < 1,
-        { fov: this.camera.fov, gunSpeed: p.spec.gun && p.spec.gun.speed },
+        { fov: this.camera.fov, gunSpeed: p.spec.gun && p.spec.gun.speed, graticule: this.planeCam.gunsightOf?.(p) },
       );
     } else if (p.alive) {
       hud.setReflectorSight?.(0, 0, false);

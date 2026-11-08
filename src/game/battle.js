@@ -36,6 +36,7 @@ import { XrayView } from '../ui/xray.js';
 // K-04: the real gunner's sight per vehicle, its detents and labels
 import { opticSteps } from '../ui/hud.js';
 import { clamp, lerp, rand, wrapAngle } from '../core/utils.js';
+import { stationsFor } from '../vehicles/interior/index.js';
 
 const TICKETS_MAX = 2100;
 const KILL_COST = 70;
@@ -410,6 +411,7 @@ export class Battle {
       <span>Space — machine gun · Shift — sniper view · Scroll — zoom</span>
       <span>1 / 2 / 3 — shell types · R (hold) — repair · F — extinguisher</span>
       <span>G — smoke grenade · H — first aid · V — scout${arty}</span>
+      <span>C — crew stations · X — third person · Scroll — hatch (in a station)</span>
       <span>M — tactical map · Tab — scoreboard · J (hold) — abandon · Esc — pause</span>
     `);
   }
@@ -895,9 +897,15 @@ export class Battle {
     const elev = p.spec.gunElev || { min: -0.14, max: 0.38 };
     const maxPitch = p.spec.aa ? 1.4 : elev.max + 0.06;
     const minPitch = elev.min - 0.06;
-    this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
-    this.camPitch = clamp(this.camPitch - input.mouseDY * sens, minPitch, maxPitch);
-    if (input.wheel !== 0) {
+    // wave 6 crew stations: C cycles, X leaves; while the player looks round
+    // from another seat the mouse is his head and the turret holds its lay
+    const crew = stationsFor(this);
+    crew.input(dt);
+    if (!crew.ownsMouse) {
+      this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
+      this.camPitch = clamp(this.camPitch - input.mouseDY * sens, minPitch, maxPitch);
+    }
+    if (input.wheel !== 0 && !crew.ownsMouse) {
       if (this.sniper) {
         // K-04: the wheel steps through the optic's detents (true field,
         // real magnification, labelled aux), widest first
@@ -937,7 +945,9 @@ export class Battle {
       Math.sin(this.camPitch),
       Math.cos(this.camYaw) * Math.cos(this.camPitch),
     );
-    const origin = tmpV2.copy(this.camera.position);
+    // (from another crew station the ray leaves the gunner's sight, so the
+    // turret keeps the world direction it was laid on)
+    const origin = crew.ownsMouse ? crew.aimOrigin(p, tmpV2) : tmpV2.copy(this.camera.position);
     const end = tmpV3.copy(origin).addScaledVector(dir, 1400);
     // A wall or a rock under the reticle ends the ray on its face, so the gun
     // converges on the house the player is looking at instead of on a tank
@@ -2421,6 +2431,8 @@ export class Battle {
 
   // ---------------- camera & HUD ----------------
   updateCamera(dt) {
+    // wave 6: is a crew-station view up this frame (hides its interior if not)
+    const stationView = stationsFor(this).beginFrame(this.spectate ? null : this.player);
     if (this.spectate) {
       this.updateSpectator(dt);
       this.shake.apply(this.camera);
@@ -2456,6 +2468,10 @@ export class Battle {
         this.camera.position.lerp(pos, 1 - Math.pow(0.001, dt));
         this.camera.lookAt(p.position.x, p.position.y + 2, p.position.z);
       }
+    } else if (stationView) {
+      // commander / driver / loader / bow gunner: the eye at the station,
+      // its vision device, the interior around it (vehicles/interior/)
+      targetFov = stationsFor(this).placeCamera(this.camera, p, dt);
     } else if (this.sniper) {
       // K-04: this vehicle's own sight at the chosen detent (a respawn in
       // another tank re-reads its optic)
@@ -2647,7 +2663,7 @@ export class Battle {
     }
 
     // sniper optics overlay: ballistic range marks + rangefinder
-    hud.setCrosshairVisible(!this.sniper);
+    hud.setCrosshairVisible(!this.sniper && !(this._crewStations && this._crewStations.viewing));
     if (this.sniper && p.alive) {
       const v = p.spec.shells[p.shellType].speed;
       const halfTan = Math.tan((this.fov * Math.PI) / 360);
@@ -3009,6 +3025,7 @@ export class Battle {
 
   dispose() {
     resetAudio();
+    if (this._crewStations) this._crewStations.dispose();
     for (const t of this.tanks) removeEngine('t' + t.id);
     if (this.wrecks) for (const w of this.wrecks) removeEngine('t' + w.id);
     this.effects.clearSmokeScreens?.();
