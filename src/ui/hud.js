@@ -9,6 +9,9 @@ import { displaySpeedKmh, airDensity, RHO0 } from '../vehicles/planes.js';
 import { PEN_HEX, penHex, penLegend, outcomeOf } from './penScale.js';
 
 const $ = (id) => document.getElementById(id);
+// wave 8: hold-to-repair ring geometry (setRepairHold)
+const REP_RING_R = 22;
+const REP_RING_C = 2 * Math.PI * REP_RING_R;
 
 const DEG = 180 / Math.PI;
 
@@ -962,9 +965,24 @@ export class HUD {
     if (this.markersRoot) this.markersRoot.style.visibility = on ? 'hidden' : '';
     for (const el of [this.damagePanel, this.statusPanel]) {
       if (!el || !el.style) continue;
-      el.style.opacity = on ? '0.28' : '';
+      el.style.opacity = on || this._simOn ? '0.28' : '';
       el.style.transition = 'opacity 0.2s';
     }
+  }
+
+  // SIMULATOR battles (game/simRules.js): what a crew would know. The battles
+  // themselves keep enemy marks and enemy minimap dots off; here the own
+  // vehicle's damage and status panels stay dimmed for the whole battle, as
+  // they are in a crew station. Called once per battle (false resets it).
+  setSimulator(on) {
+    on = !!on;
+    this._simOn = on;
+    for (const el of [this.damagePanel, this.statusPanel]) {
+      if (!el || !el.style) continue;
+      el.style.opacity = on || this._crewStationOn ? '0.28' : '';
+      el.style.transition = 'opacity 0.2s';
+    }
+    if (this.root && this.root.classList) this.root.classList.toggle('simHud', on);
   }
 
   setScopeVisible(v) {
@@ -3930,6 +3948,73 @@ export class HUD {
     setStyle(this._boundEdge, 'opacity', (0.2 + 0.8 * q).toFixed(2));
     setStyle(this._boundBanner, 'opacity', (0.65 + 0.35 * q).toFixed(2));
     setStyle(this._boundFill, 'width', `${Math.round(q * 100)}%`);
+  }
+
+  // Wave 8: the hold-to-repair ring. frac 0..1 is how far the repair key has
+  // been held toward the 2 s toggle; mode 'start' | 'cancel' picks the label;
+  // key is the bound key's name. frac 0 hides it. Built and styled here (the
+  // stylesheet belongs to another lane): ink on paper, no radius but the ring.
+  setRepairHold(frac, mode = 'start', key = 'R') {
+    const f = Number.isFinite(frac) ? Math.min(1, Math.max(0, frac)) : 0;
+    if (f <= 0) {
+      // style.display, not the hidden attribute: the inline display:flex wins
+      if (this._repHold && this._repHold.style.display !== 'none') this._repHold.style.display = 'none';
+      return;
+    }
+    const el = this._ensureRepairHold();
+    if (!el) return;
+    if (el.style.display !== 'flex') el.style.display = 'flex';
+    // Nobody feeds a dead tank's ring, or a tank the player just left for a
+    // plane: with no update for a moment it takes itself down.
+    clearTimeout(this._repHoldTimer);
+    this._repHoldTimer = setTimeout(() => { el.style.display = 'none'; }, 700);
+    const label = `${mode === 'cancel' ? 'CANCEL REPAIR' : 'REPAIR'} — HOLD ${key}`;
+    if (this._repHoldLabel.textContent !== label) this._repHoldLabel.textContent = label;
+    this._repHoldArc.setAttribute('stroke-dashoffset', (REP_RING_C * (1 - f)).toFixed(2));
+    this._repHoldArc.setAttribute('stroke', mode === 'cancel' ? '#d9a441' : '#7fb0e0');
+  }
+
+  _ensureRepairHold() {
+    if (this._repHold) return this._repHold;
+    if (typeof document === 'undefined' || !this.root) return null;
+    const el = document.createElement('div');
+    el.id = 'repairHold';
+    el.style.cssText =
+      'position:absolute;left:50%;top:76%;transform:translate(-50%,-50%);' +
+      'display:none;flex-direction:column;align-items:center;gap:6px;' +
+      'pointer-events:none;z-index:6;font-weight:600;font-size:12px;letter-spacing:0.08em;' +
+      'color:#e8e4d8;text-shadow:0 1px 2px #000;';
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('width', '54');
+    svg.setAttribute('height', '54');
+    svg.setAttribute('viewBox', '0 0 54 54');
+    const bg = document.createElementNS(NS, 'circle');
+    bg.setAttribute('cx', '27');
+    bg.setAttribute('cy', '27');
+    bg.setAttribute('r', String(REP_RING_R));
+    bg.setAttribute('fill', 'rgba(10,12,14,0.45)');
+    bg.setAttribute('stroke', 'rgba(232,228,216,0.35)');
+    bg.setAttribute('stroke-width', '4');
+    const arc = document.createElementNS(NS, 'circle');
+    arc.setAttribute('cx', '27');
+    arc.setAttribute('cy', '27');
+    arc.setAttribute('r', String(REP_RING_R));
+    arc.setAttribute('fill', 'none');
+    arc.setAttribute('stroke-width', '4');
+    arc.setAttribute('stroke-dasharray', REP_RING_C.toFixed(2));
+    arc.setAttribute('stroke-dashoffset', REP_RING_C.toFixed(2));
+    arc.setAttribute('transform', 'rotate(-90 27 27)');
+    svg.appendChild(bg);
+    svg.appendChild(arc);
+    const label = document.createElement('div');
+    el.appendChild(svg);
+    el.appendChild(label);
+    this.root.appendChild(el);
+    this._repHold = el;
+    this._repHoldArc = arc;
+    this._repHoldLabel = label;
+    return el;
   }
 
   // Built here rather than in index.html, like the spawn chip: the markup

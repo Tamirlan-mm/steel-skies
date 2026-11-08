@@ -55,6 +55,62 @@ function clampf(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+// ---------------------------------------------------------------------------
+// Wave 8: vehicle machine-gun dispersion (user feedback: "MG dispersion is far
+// too large"). The old tank MG used fire()'s uniform box of +-0.015 per axis,
+// an RMS of ~8.7 mrad per axis: a 3.5 m wide spray at 400 m. A machine gun in
+// a rigid tank mount throws its rounds into a cone a few mils across.
+//
+// `cone` is the full width (mils, 6400/circle) of the cone that holds ~96% of
+// a burst from a RIGID mount (coax cradle / tripod-equivalent), taken from the
+// period beaten-zone figures for each gun (approximate: manuals give 3-5 mils
+// for rifle-calibre MGs on a rigid mount, the .50 on a flexible pintle more).
+// The circular normal's sigma is cone / 5 (a radius of 2.5 sigma holds 95.6%
+// of the rounds; the 98% cone is ~12% wider). A ball mount (`ball`) is laid by a man's shoulder rather than
+// a cradle and adds BALL_EXTRA mils of cone. rof is rounds/s at the cyclic
+// rate, speed the muzzle velocity in m/s of the period ball round.
+//   MG34    ~900 rpm, 755 m/s (s.S.), rigid-mount cone ~4 mil
+//   MG42    ~1200 rpm, 755 m/s, cone ~5 mil (the rate shakes the mount)
+//   DT      ~600 rpm, 840 m/s (7.62x54R), cone ~5 mil (drum-fed, light barrel)
+//   M1919A4 ~500 rpm, 853 m/s (.30-06 M2 ball), cone ~4 mil
+//   BESA    ~750 rpm (high rate), 823 m/s (7.92x57), cone ~3.5 mil (heavy barrel)
+//   M2 .50  ~500 rpm, 887 m/s, cone ~6 mil on a flexible AA pintle
+// Burst growth is deliberately modest: +2.5% per round of `heat`, capped at
+// +40%, heat bleeding off at MG_HEAT_DECAY rounds per second.
+export const MIL = (2 * Math.PI) / 6400;
+export const MG_TYPES = {
+  MG34: { name: 'MG 34', cone: 4, rof: 15, speed: 755 },
+  MG42: { name: 'MG 42', cone: 5, rof: 20, speed: 755 },
+  DT: { name: 'DT', cone: 5, rof: 10, speed: 840 },
+  M1919: { name: 'M1919A4', cone: 4, rof: 8.3, speed: 853 },
+  BESA: { name: 'BESA', cone: 3.5, rof: 12.5, speed: 823 },
+  M2: { name: 'M2 .50', cone: 6, rof: 8.3, speed: 887 },
+};
+export const MG_BALL_EXTRA = 1.5; // mils of cone added by a hand-laid ball mount
+export const MG_HEAT_GROWTH = 0.025; // per round of heat
+export const MG_HEAT_CAP = 0.4; // never more than +40%
+export const MG_HEAT_DECAY = 8; // rounds of heat shed per second
+
+// Angular sigma (radians, per axis) of one round from gun `type` after `heat`
+// rounds of sustained fire. ball = fired from a hull ball mount.
+export function mgSigma(type, heat = 0, ball = false) {
+  const t = MG_TYPES[type] || MG_TYPES.MG34;
+  const cone = t.cone + (ball ? MG_BALL_EXTRA : 0);
+  const grow = 1 + Math.min(MG_HEAT_CAP, Math.max(0, heat) * MG_HEAT_GROWTH);
+  return (cone / 5) * MIL * grow;
+}
+
+// standard normal, Box-Muller (one of the pair is enough here)
+function gaussian() {
+  let u = Math.random();
+  if (u < 1e-12) u = 1e-12;
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+}
+const tmpCone = new THREE.Vector3();
+const tmpConeUp = new THREE.Vector3();
+const tmpConeA = new THREE.Vector3();
+const tmpConeB = new THREE.Vector3();
+
 // Perpendicular distance from the segment p0->p1 to `p`, closest point in `out`.
 function segmentDistance(p0, p1, p, out) {
   tmpSeg.subVectors(p1, p0);
@@ -171,6 +227,34 @@ export class BulletManager {
 
     tmpM.compose(HIDDEN, tmpQ.identity(), tmpS);
     for (let i = 0; i < MAX; i++) this.mesh.setMatrixAt(i, tmpM);
+  }
+
+  // Wave 8: a vehicle machine gun round. `sigma` is the ANGULAR standard
+  // deviation (radians, per axis) of a round about `dir` — a circular normal
+  // cone, sampled in the plane perpendicular to the bore — not the old
+  // per-axis uniform box of fire()'s `spread`. mgSigma() gives the number.
+  fireCone(pos, dir, speed, dmg, shooter, sigma = 0) {
+    tmpCone.copy(dir).normalize();
+    if (sigma > 0) {
+      // any two unit vectors perpendicular to the bore
+      const ax = Math.abs(tmpCone.y) < 0.95 ? tmpConeUp.set(0, 1, 0) : tmpConeUp.set(1, 0, 0);
+      tmpConeA.crossVectors(tmpCone, ax).normalize();
+      tmpConeB.crossVectors(tmpCone, tmpConeA);
+      const ga = gaussian() * sigma;
+      const gb = gaussian() * sigma;
+      tmpCone.addScaledVector(tmpConeA, ga).addScaledVector(tmpConeB, gb).normalize();
+    }
+    this.fire(pos, tmpCone, speed, dmg, shooter, 0, null);
+  }
+
+  // The MG table through the instance, so vehicles/tankEntity.js can use it
+  // without importing this module (and the world modules behind it).
+  mgType(type) {
+    return MG_TYPES[type] || MG_TYPES.MG34;
+  }
+
+  mgSigma(type, heat = 0, ball = false) {
+    return mgSigma(type, heat, ball);
   }
 
   // converge (optional): a world point, a harmonisation range in metres, or

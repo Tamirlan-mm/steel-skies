@@ -44,6 +44,7 @@ import { photoSurfaceMaterial } from './buildings.js';
 import { input as globalInput } from '../core/input.js';
 import { radioCue } from '../core/audio.js';
 import { clamp, rand } from '../core/utils.js';
+import { PLANE_SPEED_SCALE } from '../vehicles/planes.js';
 
 // ---------------------------------------------------------------------------
 // public constants
@@ -86,6 +87,8 @@ const GRASS_DROP = 0.04;
 
 // Service only happens with the aeroplane actually stopped, and is abandoned if
 // it leaves at speed (a touch-and-go is not a pit stop).
+// (design-scale m/s: planes.js imports this module through scenery.js, so
+// PLANE_SPEED_SCALE is applied where they are used, not at load)
 const SERVICE_STOPPED = 1.5;
 const SERVICE_ABANDON = 14;
 // Where the crew line an aeroplane up when the runway ahead of it is too short
@@ -1126,8 +1129,9 @@ function presentContacts(plane, ctx) {
       plane.serviceFrac = 0;
       ctx.effects?.trackDust?.(_pos.copy(plane.position), 1, c.surface === 'concrete' ? 0xb8b0a0 : 0x9a8a68, 0.05);
       if (player) {
-        ctx.shake?.add?.(clamp(0.1 + c.sink * 0.07, 0.1, 0.5), 0.4);
-        const sink = c.sink.toFixed(1);
+        // sink as the VSI reads it, on the design scale (planes.js PLANE_SPEED_SCALE)
+        ctx.shake?.add?.(clamp(0.1 + (c.sink / PLANE_SPEED_SCALE) * 0.07, 0.1, 0.5), 0.4);
+        const sink = (c.sink / PLANE_SPEED_SCALE).toFixed(1);
         if (af && af.team === plane.team) {
           say(ctx, `Touchdown, ${sink} m/s — brakes (B), stop to be serviced`, 'info');
         } else if (af) {
@@ -1141,8 +1145,8 @@ function presentContacts(plane, ctx) {
     }
     case 'bounce':
       if (player) {
-        ctx.shake?.add?.(clamp(0.12 + c.sink * 0.06, 0.12, 0.45), 0.35);
-        say(ctx, `Bounced, ${c.sink.toFixed(1)} m/s — ease it down`, 'warn');
+        ctx.shake?.add?.(clamp(0.12 + (c.sink / PLANE_SPEED_SCALE) * 0.06, 0.12, 0.45), 0.35);
+        say(ctx, `Bounced, ${(c.sink / PLANE_SPEED_SCALE).toFixed(1)} m/s — ease it down`, 'warn');
       }
       return 'bounce';
     case 'liftoff':
@@ -1230,11 +1234,11 @@ export function updateGroundRoll(plane, dt, ctx = {}) {
   if (plane.state !== 'alive') return plane.state === 'dead' && plane.wreckedOnGround ? 'wrecked' : 'dead';
   if (!plane.onGround) return 'airborne';
 
-  if (plane.speed > 6) {
+  if (plane.speed > 6 * PLANE_SPEED_SCALE) {
     const surf = plane.groundKind || 'concrete';
     ctx.effects?.trackDust?.(
       _pos.copy(plane.position).addScaledVector(plane.dir, -2),
-      clamp(plane.speed / 40, 0, 1),
+      clamp(plane.speed / (40 * PLANE_SPEED_SCALE), 0, 1),
       surf === 'concrete' ? 0x9a9a92 : 0x9a8a68,
       dt,
     );
@@ -1242,7 +1246,7 @@ export function updateGroundRoll(plane, dt, ctx = {}) {
       // the strip is not glass and the field less so: a fast roll rattles
       plane.afRumbleCd = 0.1;
       const rough = surf === 'concrete' ? 1 : 1.8;
-      ctx.shake?.add?.((0.01 + plane.speed * 0.001) * rough, 0.16);
+      ctx.shake?.add?.((0.01 + (plane.speed / PLANE_SPEED_SCALE) * 0.001) * rough, 0.16);
     }
   }
 
@@ -1339,12 +1343,12 @@ export function serviceOnGround(plane, dt, ctx = {}) {
   if (!plane) return 0;
   initPlaneAirfieldState(plane);
   if (!plane.onGround || plane.wrecked) return plane.serviceFrac;
-  if (plane.speed > SERVICE_ABANDON) {
+  if (plane.speed > SERVICE_ABANDON * PLANE_SPEED_SCALE) {
     plane.serviceFrac = 0;
     return 0;
   }
   // moving, but not leaving: the crew wait for it to stop
-  if (plane.speed > SERVICE_STOPPED) return plane.serviceFrac;
+  if (plane.speed > SERVICE_STOPPED * PLANE_SPEED_SCALE) return plane.serviceFrac;
   const af = airfieldAtPoint(plane.position.x, plane.position.z);
   if (!af || af.team !== plane.team) return plane.serviceFrac;
   plane.airfield = af;

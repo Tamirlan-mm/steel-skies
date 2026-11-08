@@ -7,6 +7,7 @@ import {
   deriveTankInterior, STATION_ORDER, STATION_LABEL, DEVICE_LABEL, DEVICE_DEFAULTS, limitsFor,
 } from './stations.js';
 import { InteriorLayer, breechPhase } from './layer.js';
+import { gunSightOrigin, sightHidesOwnTank } from './sight.js';
 
 export { defineTankInterior, definedTankInteriors, breechPhase, STATION_ORDER };
 
@@ -31,7 +32,9 @@ export { defineTankInterior, definedTankInteriors, breechPhase, STATION_ORDER };
 //                          ... else if (viewing) targetFov = sv.placeCamera(camera, p, dt)
 //   updateHUD:             crosshair hidden while sv.viewing
 // The turret holds the world direction it was laid on while the player looks
-// round from another seat; firing still works from every station.
+// round from another seat; firing still works from every station. Simulator
+// adds the commander's aiming command (TankStations._layCommand): after sv.input
+//                          if sv.ownsMouse && sv.laying: camYaw/camPitch = sv.layYaw/layPitch
 //
 // Per-vehicle data: src/vehicles/interior/<specId>.js (registry.js has the
 // file format); resolveTankInterior(spec) merges it over stations.js's
@@ -53,7 +56,10 @@ try {
   if (Array.isArray(TOUCH_BUTTONS) && !TOUCH_BUTTONS.some((b) => b && b.id === 'crew')) {
     const i = TOUCH_BUTTONS.findIndex((b) => b && b.id === 'sight');
     TOUCH_BUTTONS.splice(i >= 0 ? i + 1 : TOUCH_BUTTONS.length, 0,
-      { id: 'crew', label: 'CREW', modes: 'tank', code: 'KeyC' });
+      { id: 'crew', label: 'CREW', modes: 'tank', code: 'KeyC' },
+      // simulator: the commander's aiming command (TankStations._layCommand);
+      // hidden everywhere else by _syncLayButton
+      { id: 'lay', label: 'LAY', modes: 'tank', code: 'Mouse2', aim: true });
   }
 } catch (e) {
   /* a touch table without the hook: the keyboard still works */
@@ -61,6 +67,8 @@ try {
 
 export const STATION_HELP = 'C — crew stations · E — gunner: sight / look around · X — third person';
 
+// simulator lock (TankStations._lockSeat): the seat a player is put back in
+const LOCK_ORDER = ['commander', 'driver', 'gunner', 'loader', 'radio'];
 const finite3 = (a) => Array.isArray(a) && a.length === 3 && a.every((v) => Number.isFinite(v));
 
 // Fill in every station's device and limits, and drop anything malformed
@@ -110,6 +118,9 @@ function normStation(key, st, b) {
 function finalize(def, base) {
   const out = { ...def, stations: {} };
   for (const key of Object.keys(def.stations || {})) {
+    // only the seats the real tank had (wave 8: no bow gunner in an IS-2)
+    const seats = def.crewRoles || base.crewRoles;
+    if (Array.isArray(seats) && !seats.includes(key)) continue;
     const st = normStation(key, def.stations[key], base.stations[key]);
     if (!st) continue;
     // the gunner's look-around view (wave 7): his own vision device, or a
@@ -406,6 +417,7 @@ export class TankStations {
   // ---- the vehicle
   attach(tank) {
     if (this.tank && this.tank.onInteriorEvent) this.tank.onInteriorEvent = null;
+    if (this.tank) sightHidesOwnTank(this.tank, false);
     if (this.layer) {
       this.layer.dispose();
       this.layer = null;
@@ -415,6 +427,7 @@ export class TankStations {
     this.station = null;
     this.hatch = false;
     this.gunnerLook = false;
+    this.commanderOut = false;
     this._crewSeen = tank && tank.crewAlive ? { ...tank.crewAlive } : null;
     this._ext = {};
     if (tank && this.def) {
@@ -427,6 +440,8 @@ export class TankStations {
     if (tank) {
       tank.onInteriorEvent = (type, a, b) => {
         if (this.layer && this.viewing) this.layer.onEvent(type, a, b);
+        // a hit: a commander riding head-out ducks back in (crew.js figure)
+        if (type === 'hit' || type === 'pen') this.commanderOut = false;
       };
       const pref = stationPref();
       if (pref && pref.station !== 'gunner' && this.available(pref.station)) {
@@ -443,8 +458,14 @@ export class TankStations {
     const st = this.def && this.def.stations[role];
     const t = this.tank;
     if (!st || !t || t.alive === false) return false;
-    const a = t.crewAlive ? t.crewAlive[role] : 1;
+    const a = t.crewAlive ? t.crewAlive[(this.def.crewAliveKey && this.def.crewAliveKey[role]) || role] : 1;
     return !(a <= 0);
+  }
+
+  // a seat's name on this tank (def.stationLabels: the Stuart's commander loads)
+  _label(role) {
+    const own = this.def && this.def.stationLabels;
+    return (own && own[role]) || STATION_LABEL[role] || role;
   }
 
   // the stations this tank offers right now, in cycle order
@@ -508,15 +529,53 @@ export class TankStations {
     return true;
   }
 
-  // Next station in the cycle; past the last one, back to third person.
+  // Next station in the cycle; past the last one, back to third person
+  // (simulator: round to the first station again — there is no outside).
   cycle() {
     // the gunner's sight steps on to his look-around view first
     if (this.station === 'gunner' && !this.gunnerLook && this.lookAround(true)) return true;
     const list = this.stations();
     if (!list.length) return this.exit();
     const i = this.station ? list.indexOf(this.station) : -1;
-    if (i >= list.length - 1 && this.station) return this.exit();
+    if (i >= list.length - 1 && this.station) return this.locked ? this.enter(list[0]) : this.exit();
     return this.enter(list[i + 1]);
+  }
+
+  // ---- SIMULATOR camera lock (game/simRules.js): battle.simulator keeps the
+  // player at a crew station for as long as the tank lives. X does nothing,
+  // the cycle never ends in third person, leaving the gunner's sight (Shift)
+  // goes back to the seat the player came from. The death cam and the
+  // spectator are the battle's and stay as they are.
+  get locked() {
+    return !!(this.battle && this.battle.simulator);
+  }
+
+  // put a locked player back in a seat: the one he came from, else the
+  // commander, the driver, the gunner (his look-around, else his sight)...
+  _lockSeat() {
+    const prev = this._prevSeat;
+    if (prev === 'gunner_look' && this.available('gunner')) {
+      this.enter('gunner');
+      if (this.lookAround(true)) return true;
+    } else if (prev && prev !== 'gunner' && this.available(prev)) return this.enter(prev);
+    for (const r of LOCK_ORDER) {
+      if (!this.available(r)) continue;
+      if (r === 'gunner') {
+        this.enter('gunner');
+        this.lookAround(true);
+        return true;
+      }
+      return this.enter(r);
+    }
+    return false;
+  }
+
+  _enforceLock() {
+    if (!this.locked) return;
+    const b = this.battle;
+    const t = this.tank;
+    if (!t || t.alive === false || !this.def || b.spectate || b.finished || b.sniper) return;
+    if (!this.station || (this.station === 'gunner' && !this.gunnerLook)) this._lockSeat();
   }
 
   get ownsMouse() {
@@ -534,24 +593,31 @@ export class TankStations {
     const b = this.battle;
     const p = b.player;
     if (p !== this.tank) this.attach(p);
+    this.laying = false; // (set below when the commander gives the order)
+    this._syncLayButton();
     if (!p || p.alive === false) return;
     // the gunner's seat is the sniper view, whoever toggled it (Shift in
     // the look-around view goes back to the sight)
     if (b.sniper && this.station !== 'gunner') {
+      if (this.station) this._prevSeat = this.station;
       this.station = 'gunner';
       this.gunnerLook = false;
-    } else if (b.sniper && this.gunnerLook) this.gunnerLook = false;
-    else if (!b.sniper && this.station === 'gunner' && !this.gunnerLook) this.station = null;
+    } else if (b.sniper && this.gunnerLook) {
+      this._prevSeat = 'gunner_look';
+      this.gunnerLook = false;
+    } else if (!b.sniper && this.station === 'gunner' && !this.gunnerLook) this.station = null;
+    this._enforceLock();
     if (input.pressed('KeyC')) this.cycle();
     if (input.pressed(KEY_GUNNER_VIEW) && this.station === 'gunner') this.lookAround();
-    if (input.pressed('KeyX') && this.station) this.exit();
+    if (input.pressed('KeyX') && this.station && !this.locked) this.exit();
     // a crewman down: his seat is gone
     if (this.station && !this.available(this.station)) {
       const lost = this.station;
       const next = this.stations().find((r) => r !== 'gunner') || null;
-      this._notify(`${STATION_LABEL[lost] || lost} knocked out — ${next ? STATION_LABEL[next] : 'third person'}`, 'warn');
+      this._notify(`${this._label(lost)} knocked out — ${next ? this._label(next) : 'third person'}`, 'warn');
       if (next) this.enter(next);
       else this.exit();
+      this._enforceLock();
     }
     this._pollCrew();
     if (!this.station || (this.station === 'gunner' && !this.gunnerLook)) return;
@@ -560,6 +626,7 @@ export class TankStations {
     const hatch = this.hatch && st.hatch;
     const lim = hatch ? st.hatch.limits : st.limits;
     const sens = 0.0022 * (this.fov / 60);
+    this._layHead(st);
     this.yaw -= input.mouseDX * sens;
     this.pitch -= input.mouseDY * sens;
     if (lim.yaw) {
@@ -578,6 +645,76 @@ export class TankStations {
         this.pitch = clamp(this.pitch, l2.pitch[0], l2.pitch[1]);
       }
     }
+    this._layCommand(st, hatch);
+  }
+
+  // ---- SIMULATOR: the commander's aiming command. Outside the sight the turret
+  // holds its lay, so a man who can only look from inside would have to go to
+  // the sight to turn the gun at all. The rule: at the commander's seat (with
+  // his head out too) and at the gunner's own look-around view, RMB lays the gun
+  // on the line of sight. The man at the sight does it at the real traverse
+  // rate, so the order only works if the real gun can follow: the gunner's seat
+  // staffed and the traverse drive working; a casemate gun swings no further
+  // than it swings anyway ("turn the hull"). The driver, the loader and the
+  // radio operator give no such order. A tap is an order (the gun finishes the
+  // swing by itself); held, the gun keeps following the view.
+  // The battle reads `laying`, `layYaw`, `layPitch` right after input().
+  _laySeat() {
+    return this.locked && (this.station === 'commander' || (this.station === 'gunner' && this.gunnerLook));
+  }
+
+  _layBlocked() {
+    const t = this.tank;
+    if (typeof t.staffed === 'function' && !t.staffed('gunner')) return `${this._label('gunner')} seat empty — the gun cannot follow`;
+    if (t.modules && t.modules.traverse && !t.modules.traverse.ok) return 'Traverse drive out — the gun cannot follow';
+    return null;
+  }
+
+  // a turret-frame seat rides the turret round: while the gun swings under an
+  // order the man keeps his eyes on the bearing he gave
+  _layHead(st) {
+    const t = this.tank;
+    const fy = st.frame === 'turret' ? t.yaw + t.turretYaw : t.yaw;
+    if (this._layActive && this._layFy != null) this.yaw -= wrapAngle(fy - this._layFy);
+    this._layFy = fy;
+  }
+
+  _layCommand(st, hatch) {
+    this.laying = false;
+    const seat = this._laySeat();
+    const held = seat && input.rightDown;
+    const t = this.tank;
+    const pressed = held && !this._layHeld;
+    this._layHeld = held;
+    if (!seat) {
+      this._layActive = false;
+      return;
+    }
+    if (!held) {
+      // the order stands until the gun has finished the swing
+      if (this._layActive && !(t.turretRate > 1e-3)) this._layActive = false;
+      return;
+    }
+    const why = this._layBlocked();
+    if (why) {
+      if (pressed) this._notify(why, 'warn');
+      this._layActive = false;
+      return;
+    }
+    const frameNode = st.frame === 'turret' && t.turretGroup ? t.turretGroup : t.group;
+    frameNode.updateWorldMatrix(true, false);
+    frameNode.matrixWorld.decompose(_p, _qf, _s);
+    _eul.set(-this.pitch, this.yaw, 0, 'YXZ');
+    _q.setFromEuler(_eul);
+    _d.set(0, 0, 1).applyQuaternion(_q).applyQuaternion(_qf).normalize();
+    this.layYaw = Math.atan2(_d.x, _d.z);
+    this.layPitch = Math.asin(clamp(_d.y, -1, 1));
+    this.laying = true;
+    this._layActive = true;
+    if (pressed && t.spec && t.spec.turretYawLimit != null &&
+      Math.abs(wrapAngle(this.layYaw - t.yaw)) > t.spec.turretYawLimit) {
+      this._notify('The gun cannot bear — turn the hull', 'warn');
+    }
   }
 
   // knocked-out crewmen as interior events (the layer's own feedback)
@@ -594,6 +731,7 @@ export class TankStations {
 
   // ---- the turret keeps its lay: aim from the gunner's sight, not the eye
   aimOrigin(tank, out) {
+    if (tank && tank.gunGroup) return gunSightOrigin(tank, out);
     if (tank && typeof tank.turretWorldPos === 'function') return tank.turretWorldPos(out).add(_s.set(0, 0.9, 0));
     return out.copy(this.battle.camera.position);
   }
@@ -602,13 +740,23 @@ export class TankStations {
   beginFrame(tank) {
     const b = this.battle;
     if (tank && tank !== this.tank) this.attach(tank);
-    if (b.sniper && this.station && this.station !== 'gunner') this.station = 'gunner';
-    if (b.sniper && this.gunnerLook) this.gunnerLook = false;
+    if (b.sniper && this.station && this.station !== 'gunner') {
+      this._prevSeat = this.station;
+      this.station = 'gunner';
+    }
+    if (b.sniper && this.gunnerLook) {
+      this._prevSeat = 'gunner_look';
+      this.gunnerLook = false;
+    }
+    // simulator: never a frame of third person while the tank lives
+    if (tank && tank === this.tank) this._enforceLock();
     const v = !!(tank && tank.alive !== false && this.def && this.station
       && (this.station !== 'gunner' || this.gunnerLook) && this.current()
       && !b.sniper && !b.spectate && !b.finished);
     if (!v && this.viewing) this._leave();
     this.viewing = v;
+    // through the sight the outside model is not drawn (sight.js)
+    if (this.tank) sightHidesOwnTank(this.tank, !!(b.sniper && tank === this.tank && tank.alive !== false && !b.spectate && !b.finished));
     if (!v && this.layer) this.layer.setVisible(false);
     this._syncTag();
     return v;
@@ -663,11 +811,15 @@ export class TankStations {
     this.fov = hatch ? st.hatch.fov : st.fov;
     // level B: the interior around the eye (not with the head out of a hatch)
     const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+    // the hatch stays as the player left it at the commander's station: from
+    // the other seats his legs and torso are seen, standing out of it (wave 8)
+    if (this.station === 'commander') this.commanderOut = !!this.hatch;
     if (pose.type === 'hatch') {
       if (this.layer) this.layer.setVisible(false);
     } else {
       if (!this.layer) this.layer = new InteriorLayer(this.battle.scene, tank, this.def);
       this.layer.setVisible(true);
+      this.layer.commanderOut = !!this.commanderOut;
       this._offset.copy(pose.aperture).sub(pose.eye);
       if (typeof window !== 'undefined' && window.innerHeight) this.layer.setPixelHeight(window.innerHeight);
       const r = this.battle.renderer;
@@ -686,7 +838,7 @@ export class TankStations {
     // look-around key)
     const sight = !this.viewing && this.station === 'gunner' && this.battle.sniper && !this.battle.spectate;
     const tid = this.tank && this.tank.spec ? this.tank.spec.id : '';
-    const key = this.viewing ? `${tid}|${this.station}|${this.hatch ? 1 : 0}|${this.gunnerLook ? 1 : 0}` : sight ? `${tid}|gunner|sight` : '';
+    const key = this.viewing ? `${tid}|${this.station}|${this.hatch ? 1 : 0}|${this.gunnerLook ? 1 : 0}|${this._layActive ? 1 : 0}` : sight ? `${tid}|gunner|sight` : '';
     if (key === this._tagKey) return;
     this._tagKey = key;
     // the HUD steps aside while a station view is up (markers hidden, damage
@@ -718,14 +870,35 @@ export class TankStations {
       const hint = !sight && st.hatch ? ` · Scroll — ${this.hatch ? 'button up' : 'hatch'}` : '';
       const look = this.station === 'gunner' && this.def.stations.gunner && this.def.stations.gunner.vision
         ? `E — ${sight ? 'look around' : 'sight'} · ` : '';
-      const label = this.station === 'gunner' && this.gunnerLook && st.device.type === 'none' ? 'SEAT VIEW' : DEVICE_LABEL[dev] || '';
-      el.innerHTML = `<b>${STATION_LABEL[this.station] || this.station}</b><span>${label}</span>` +
-        `<i>${look}C — next · X — third person${hint}</i>`;
+      // a gunner with no vision device of his own (Panther G, Tiger: the
+      // real men had only the sight) — said so on the tag (wave 8)
+      const label = this.station === 'gunner' && this.gunnerLook && st.device.type === 'none'
+        ? (this.def.layout && this.def.layout.turret ? 'SEAT VIEW — no gunner periscope on this tank, sight only' : 'OPEN TOP')
+        : DEVICE_LABEL[dev] || '';
+      const lay = !sight && this._laySeat() ? ' · RMB — lay the gun here' : '';
+      el.innerHTML = `<b>${this._label(this.station)}</b><span>${this._layActive && !sight ? 'GUN TRAVERSING' : label}</span>` +
+        `<i>${look}C — next · ${this.locked ? (sight ? 'Shift — leave the sight' : 'Shift — gunner sight') : 'X — third person'}${lay}${hint}</i>`;
       el.classList.remove('hidden');
     }
     try {
       if (!this._touchBtn && document.querySelector) this._touchBtn = document.querySelector('#touchUI [data-tc="crew"]');
       if (this._touchBtn && this._touchBtn.classList) this._touchBtn.classList.toggle('tcSel', !!key);
+    } catch (e) {
+      /* no touch layer */
+    }
+  }
+
+  // the touch LAY button: only at a seat that can give the order (core/touch.js
+  // only shows or hides its own context buttons, so this one is kept here)
+  _syncLayButton() {
+    if (typeof document === 'undefined' || !document.querySelector) return;
+    try {
+      if (this._layBtn === undefined) {
+        this._layBtn = document.querySelector('#touchUI [data-tc="lay"]') || null;
+        // beside the CREW button (style.css .tc-crew)
+        if (this._layBtn && this._layBtn.style) this._layBtn.style.cssText += ';right:calc(var(--sr) + 222px);bottom:calc(var(--sb) + 82px);width:56px;height:40px;';
+      }
+      if (this._layBtn && this._layBtn.classList) this._layBtn.classList.toggle('tcOff', !this._laySeat());
     } catch (e) {
       /* no touch layer */
     }

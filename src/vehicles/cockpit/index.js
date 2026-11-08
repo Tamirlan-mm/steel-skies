@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { markShared } from '../../core/materials.js';
-import { displaySpeedKmh } from '../planes.js';
+import { PLANE_SPEED_SCALE, displaySpeedKmh } from '../planes.js';
 import { mergeDef } from '../interior/registry.js';
 import {
   createLayerUniforms, layerMaterial, layerMesh, GeoBuilder, lin, sceneDaylight, ORDER_BODY,
@@ -222,7 +222,9 @@ export function readInstruments(plane, prev = null, dt = 0) {
     units: u,
     speed: kmh / KMH_PER[u.speed],
     alt: u.alt === 'ft' ? alt * 3.28084 : alt,
-    vs: plane.vel ? plane.vel.y : 0,
+    // design m/s, like the HUD's V/S tape (airBattle.js x.vspeed): the dial's
+    // +/- 30 m/s is a handbook scale and the world flies at PLANE_SPEED_SCALE
+    vs: plane.vel ? plane.vel.y / PLANE_SPEED_SCALE : 0,
     bank: Math.atan2(tmpL.y, tmpU.y),
     pitch: Math.asin(Math.max(-1, Math.min(1, dir.y))),
     heading,

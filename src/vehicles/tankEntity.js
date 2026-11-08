@@ -8,6 +8,7 @@ import {
   gearboxFor,
   suspensionFor,
   driveRunningGear,
+  mgMountsFor,
 } from './tanks.js';
 import { terrainHeight, PLAY_BOUND } from '../world/terrain.js';
 import { clamp, moveToward, angleToward, wrapAngle } from '../core/utils.js';
@@ -39,6 +40,8 @@ const tmpPlate = new THREE.Vector3();
 const tmpArmPoint = new THREE.Vector3();
 const tmpArmDir = new THREE.Vector3();
 const tmpBurst = new THREE.Vector3();
+const tmpMgA = new THREE.Vector3();
+const tmpMgB = new THREE.Vector3();
 const dispA = new THREE.Vector3();
 const dispB = new THREE.Vector3();
 // reused by sampleGround so the four-point terrain probe allocates nothing
@@ -114,6 +117,26 @@ const CREW_LOG_CAP = 32;
 // deliberately NOT on this list: the loader rule is exactly x2 and must not
 // compound into x2.5 when the commander is gone too (crew.md S4).
 const COMMAND_LOSS = 0.2;
+
+// ---- wave 8: machine guns, repair key, support points ----
+// Burst heat bleeds off at this many rounds a second (mirrors bullets.js
+// MG_HEAT_DECAY; the dispersion law itself lives there).
+const MG_HEAT_DECAY = 8;
+// a timer this far below zero is a trigger pulled after a pause: at most one
+// round of catch-up, never a burst out of nothing
+const MG_TIMER_FLOOR = -0.05;
+// fallback when a caller hands in a bullet manager without the MG table
+const MG_FALLBACK = { rof: 13, speed: 850, cone: 4 };
+// Repair key (user feedback: "you should not have to keep holding R"): hold
+// it this long to START a repair session that then runs on its own — every
+// broken module in turn — and hold it as long again to call the crew off.
+export const REPAIR_HOLD_SECONDS = 2;
+// On a capture point the team holds the crew have spares and help to hand:
+// repairs run this many times faster and eat no repair kit.
+export const SUPPORT_REPAIR_MULT = 2.5;
+// ... and every this many seconds on the point one knocked-out crewman is
+// replaced by a fresh man (the most important empty seat first).
+export const SUPPORT_CREW_PERIOD = 12;
 
 // Blast ladder for bombs (applyExplosion with opts.model === 'bomb'). Distances
 // are standoff from the armour; L = (R - 7) * 0.45 is the lethal standoff.
@@ -397,6 +420,26 @@ export class Tank {
     this.turretGroup = built.turretGroup;
     this.gunGroup = built.gunGroup;
     this.muzzle = built.muzzle;
+    // wave 8: the machine guns' own ports (coax in the gun frame, beside the
+    // bore; hull MG in its ball in the front plate). mgMountsFor reads the
+    // same numbers the geometry was drawn from.
+    this.mgMounts = mgMountsFor(spec);
+    this.coaxPort = null;
+    this.hullMgPort = null;
+    if (this.mgMounts.coax) {
+      const c = this.mgMounts.coax;
+      this.coaxPort = new THREE.Object3D();
+      this.coaxPort.name = 'coaxPort';
+      this.coaxPort.position.set(c.x, c.y, c.z);
+      this.gunGroup.add(this.coaxPort);
+    }
+    if (this.mgMounts.hull) {
+      const h = this.mgMounts.hull;
+      this.hullMgPort = new THREE.Object3D();
+      this.hullMgPort.name = 'hullMgPort';
+      this.hullMgPort.position.set(h.x, h.y, h.z);
+      built.group.add(this.hullMgPort);
+    }
     this.hullBox = built.hullBox;
     this.turretBox = built.turretBox;
     // moving tracks and wheels: metres each side has run (left = +X), wrapped
@@ -457,6 +500,16 @@ export class Tank {
     this.streamAmmo = spec.aa ? spec.aa.ammo : spec.mg ? spec.mg.ammo : 0;
     this.streamTimer = 0;
     this.streamSound = 0;
+    // wave 8: each MG keeps its own cyclic timer and burst heat; both share
+    // the one belt count (streamAmmo) the HUD has always shown
+    this.mgTimer = { coax: 0, hull: 0 };
+    this.mgHeat = { coax: 0, hull: 0 };
+    // what fireMachineGuns did last call, for the battle's flash and sound
+    this.mgShot = {
+      coax: 0, hull: 0,
+      coaxPos: new THREE.Vector3(), coaxDir: new THREE.Vector3(),
+      hullPos: new THREE.Vector3(), hullDir: new THREE.Vector3(),
+    };
 
     // ---- gun laying ----
     this.dispersion = spec.dispersion ?? BASE_DISPERSION;
@@ -529,6 +582,17 @@ export class Tank {
     this.repairTarget = null;
     this.repairFrac = 0;
     this.repairInterrupt = null;
+    // wave 8 repair session: started / cancelled by holding the repair key
+    // (updateRepairKey); while it runs the crew work through every broken
+    // module on their own. repairSessionEnd is set when one ends by itself
+    // ('done' | 'moving' | 'dead') for the battle to announce, then cleared.
+    this.repairSession = false;
+    this.repairSessionEnd = null;
+    this.repairHoldT = 0;
+    this.repairHoldLatched = false;
+    // on a capture point the team holds (the battle sets atSupport each frame)
+    this.atSupport = false;
+    this.supportCrewT = 0;
     // left on so a battle that has not been taught the repair key still sees
     // its crews put their own tracks back on, exactly as they always did
     this.autoRepair = true;
@@ -625,6 +689,115 @@ export class Tank {
     return out.setFromMatrixPosition(this.muzzle.matrixWorld);
   }
 
+  // ---------------------------------------------------------------------
+  // wave 8: machine guns from their own mounts
+  // ---------------------------------------------------------------------
+  // The coax port's muzzle, world space (falls back to the main muzzle on a
+  // vehicle without a coax, which keeps the SPAA and old callers working).
+  coaxWorld(out = new THREE.Vector3()) {
+    if (!this.coaxPort) return this.muzzleWorld(out);
+    this.coaxPort.updateWorldMatrix(true, false);
+    return out.setFromMatrixPosition(this.coaxPort.matrixWorld);
+  }
+
+  // The coax is laid with the gun: its bore is parallel to the main bore.
+  coaxDirection(out = new THREE.Vector3()) {
+    return this.gunDirection(out);
+  }
+
+  hullMgWorld(out = new THREE.Vector3()) {
+    if (!this.hullMgPort) return null;
+    this.hullMgPort.updateWorldMatrix(true, false);
+    return out.setFromMatrixPosition(this.hullMgPort.matrixWorld);
+  }
+
+  // Can the hull MG bear on `point`? If so `outDir` is the world direction
+  // from its ball to the point and the call returns true. The ball traverses
+  // `yaw` either side of the hull centreline and elevates `up` / depresses
+  // `down` from the hull plane; outside that the gunner cannot lay it.
+  hullMgAim(point, outDir) {
+    const h = this.mgMounts && this.mgMounts.hull;
+    if (!h || !point) return false;
+    const p = this.hullMgWorld(tmpMgA);
+    if (!p) return false;
+    tmpMgB.subVectors(point, p);
+    if (tmpMgB.lengthSq() < 1) return false;
+    // into the hull frame (rotation only)
+    tmpQ2.copy(this.group.quaternion).invert();
+    tmpMgB.applyQuaternion(tmpQ2);
+    const yaw = Math.atan2(tmpMgB.x, tmpMgB.z);
+    const pitch = Math.atan2(tmpMgB.y, Math.max(1e-6, Math.hypot(tmpMgB.x, tmpMgB.z)));
+    if (tmpMgB.z <= 0 || Math.abs(yaw) > h.yaw || pitch > h.up || pitch < -h.down) return false;
+    if (outDir) outDir.subVectors(point, p).normalize();
+    return true;
+  }
+
+  // Who works the hull MG: the bow gunner where the crew has one, otherwise
+  // the driver (a fixed hull gun on a four-man crew).
+  hullMgManned() {
+    return this.crewStations.includes('radio') ? this.staffed('radio') : this.staffed('driver');
+  }
+
+  updateMgTimers(dt) {
+    for (const k of ['coax', 'hull']) {
+      let t = this.mgTimer[k] - dt;
+      if (t < MG_TIMER_FLOOR) t = MG_TIMER_FLOOR;
+      this.mgTimer[k] = t;
+      if (this.mgHeat[k] > 0) this.mgHeat[k] = Math.max(0, this.mgHeat[k] - MG_HEAT_DECAY * dt);
+    }
+  }
+
+  // Trigger held this frame: the coax fires along the gun from its own port,
+  // the hull MG fires from its ball at `aimPoint` if the point is inside its
+  // arc and its gunner is in his seat. Both draw on streamAmmo. `bullets` is
+  // the battle's BulletManager (fireCone + the MG table). Returns this.mgShot:
+  // rounds fired per gun this call and the port / bore of each, for the
+  // battle's muzzle flash and sound. Not for the SPAA's quad (spec.aa).
+  fireMachineGuns(bullets, aimPoint = this.aimPoint, maxRounds = 8) {
+    const shot = this.mgShot;
+    shot.coax = 0;
+    shot.hull = 0;
+    const wpn = this.spec.mg;
+    if (!wpn || this.spec.aa || !bullets || !this.alive) return shot;
+    const mounts = this.mgMounts || {};
+    const coaxOk = this.staffed('gunner') && !!mounts.coax;
+    const hullOk = !!mounts.hull && this.hullMgManned() && this.hullMgAim(aimPoint, shot.hullDir);
+    let budget = maxRounds;
+    if (coaxOk) {
+      const ty = mounts.coax.type;
+      const row = bullets.mgType ? bullets.mgType(ty) : MG_FALLBACK;
+      this.coaxWorld(shot.coaxPos);
+      this.coaxDirection(shot.coaxDir);
+      while (this.mgTimer.coax <= 0 && this.streamAmmo > 0 && budget > 0) {
+        this.mgTimer.coax += 1 / row.rof;
+        this.streamAmmo--;
+        budget--;
+        const sigma = bullets.mgSigma ? bullets.mgSigma(ty, this.mgHeat.coax, false) : 0.0008;
+        this.mgHeat.coax += 1;
+        if (bullets.fireCone) bullets.fireCone(shot.coaxPos, shot.coaxDir, row.speed, wpn.dmg, this, sigma);
+        else bullets.fire(shot.coaxPos, shot.coaxDir, row.speed, wpn.dmg, this, sigma);
+        shot.coax++;
+      }
+    }
+    if (hullOk) {
+      const ty = mounts.hull.type;
+      const row = bullets.mgType ? bullets.mgType(ty) : MG_FALLBACK;
+      this.hullMgWorld(shot.hullPos);
+      budget = maxRounds;
+      while (this.mgTimer.hull <= 0 && this.streamAmmo > 0 && budget > 0) {
+        this.mgTimer.hull += 1 / row.rof;
+        this.streamAmmo--;
+        budget--;
+        const sigma = bullets.mgSigma ? bullets.mgSigma(ty, this.mgHeat.hull, true) : 0.0011;
+        this.mgHeat.hull += 1;
+        if (bullets.fireCone) bullets.fireCone(shot.hullPos, shot.hullDir, row.speed, wpn.dmg, this, sigma);
+        else bullets.fire(shot.hullPos, shot.hullDir, row.speed, wpn.dmg, this, sigma);
+        shot.hull++;
+      }
+    }
+    return shot;
+  }
+
   turretWorldPos(out = new THREE.Vector3()) {
     this.turretGroup.updateWorldMatrix(true, false);
     return out.setFromMatrixPosition(this.turretGroup.matrixWorld);
@@ -719,8 +892,10 @@ export class Tank {
     this.updateCrew(dt);
     this.recomputeCrew();
     this.updateRepair(dt);
+    this.updateSupport(dt);
     this.updateFire(dt);
     if (!this.alive) return;
+    this.updateMgTimers(dt);
 
     const runX = this.group.position.x;
     const runZ = this.group.position.z;
@@ -1027,8 +1202,104 @@ export class Tank {
     // a man climbing between seats is not holding a spanner
     const hands =
       Math.max(0, this.crew - this.crewSwaps.length) / Math.max(1, this.crewStations.length);
-    const kit = this.consumables.repair > 0 ? 1 : 0.45;
-    return (0.4 + 0.6 * hands) * kit * this.coord;
+    // a held capture point has the spares and the help: no kit needed, and
+    // the job goes SUPPORT_REPAIR_MULT times faster
+    const kit = this.atSupport || this.consumables.repair > 0 ? 1 : 0.45;
+    const support = this.atSupport ? SUPPORT_REPAIR_MULT : 1;
+    return (0.4 + 0.6 * hands) * kit * support * this.coord;
+  }
+
+  // Anything the crew could put right now?
+  hasRepairWork() {
+    for (const k of REPAIRABLE) if (this.modules[k] && !this.modules[k].ok) return true;
+    return false;
+  }
+
+  // The repair key, fed every frame with whether it is held. Hold it
+  // REPAIR_HOLD_SECONDS to start a session (which then runs by itself) or, with
+  // one running, to cancel it; it must be let go before it can toggle again.
+  // Returns the edge, or null: 'started' | 'cancelled' | 'nothing' | 'moving'.
+  // repairHoldFrac / repairHoldMode drive the HUD's progress ring.
+  updateRepairKey(dt, held) {
+    if (!held || !this.alive) {
+      this.repairHoldT = 0;
+      this.repairHoldLatched = false;
+      return null;
+    }
+    if (this.repairHoldLatched) return null;
+    // nothing broken and nothing running: say so at once, no ring to sit through
+    if (!this.repairSession && this.repairHoldT === 0 && !this.hasRepairWork()) {
+      this.repairHoldLatched = true;
+      return 'nothing';
+    }
+    this.repairHoldT += dt;
+    if (this.repairHoldT < REPAIR_HOLD_SECONDS) return null;
+    this.repairHoldT = 0;
+    this.repairHoldLatched = true;
+    if (this.repairSession) {
+      this.stopRepairSession(null);
+      return 'cancelled';
+    }
+    if (Math.abs(this.speed) > 0.6) return 'moving';
+    if (!this.startRepairSession()) return 'nothing';
+    return 'started';
+  }
+
+  get repairHoldFrac() {
+    return this.repairHoldLatched ? 0 : clamp(this.repairHoldT / REPAIR_HOLD_SECONDS, 0, 1);
+  }
+
+  get repairHoldMode() {
+    return this.repairSession ? 'cancel' : 'start';
+  }
+
+  startRepairSession() {
+    if (!this.alive || !this.hasRepairWork()) return false;
+    this.repairSession = true;
+    this.repairSessionEnd = null;
+    this.startRepair();
+    return true;
+  }
+
+  // reason: what to announce ('done' | 'moving' | 'dead'), null for a cancel
+  // the player asked for (the battle has already said so)
+  stopRepairSession(reason) {
+    const was = this.repairSession;
+    this.repairSession = false;
+    if (this.repairing) this.cancelRepair(reason || 'stopped');
+    if (was && reason) this.repairSessionEnd = reason;
+  }
+
+  // Capture-point support: the battle sets atSupport each frame (true on a
+  // point the team holds). While on it, every SUPPORT_CREW_PERIOD seconds one
+  // knocked-out crewman is replaced. The clock only runs while a seat is
+  // empty and is kept between visits, so stepping off and on gains nothing.
+  updateSupport(dt) {
+    if (!this.atSupport || !this.alive) return;
+    if (this.crew >= this.crewStations.length) {
+      this.supportCrewT = 0;
+      return;
+    }
+    this.supportCrewT += dt;
+    if (this.supportCrewT >= SUPPORT_CREW_PERIOD) {
+      if (this.replenishCrewMember()) this.supportCrewT = 0;
+    }
+  }
+
+  // A fresh man into the most important EMPTY seat (full health). Returns the
+  // seat, or null when every seat is filled. Logged as 'replenished'.
+  replenishCrewMember() {
+    if (!this.alive) return null;
+    for (let i = 0; i < SEATS_BY_IMPORTANCE.length; i++) {
+      const seat = SEATS_BY_IMPORTANCE[i];
+      if (!this.hasStation(seat) || this.crewAlive[seat] > 0) continue;
+      this.crewAlive[seat] = 1;
+      this.logCrew({ type: 'replenished', role: seat });
+      this.planSwaps();
+      this.recomputeCrew();
+      return seat;
+    }
+    return null;
   }
 
   repairEstimate(key) {
@@ -1076,6 +1347,19 @@ export class Tank {
     if (!this.repairing && this.autoRepair && Math.abs(this.speed) < 0.6) {
       this.startRepair();
     }
+    // wave 8: a session the player started keeps the crew going module after
+    // module (and back on the job after a hit interrupts one) until nothing is
+    // left, the vehicle moves off, or he holds the key again to call it off
+    if (this.repairSession) {
+      if (Math.abs(this.speed) > 0.6) {
+        this.stopRepairSession('moving');
+        return;
+      }
+      if (!this.repairing && !this.startRepair()) {
+        this.stopRepairSession('done');
+        return;
+      }
+    }
 
     const m = this.repairing ? this.modules[this.repairTarget] : null;
     if (!m) {
@@ -1099,7 +1383,8 @@ export class Tank {
     if (this.repairFrac >= 1) {
       m.ok = true;
       m.timer = 0;
-      if (this.consumables.repair > 0) this.consumables.repair--;
+      // the point's own spares, not the kit, on a held capture point
+      if (!this.atSupport && this.consumables.repair > 0) this.consumables.repair--;
       this.repairing = false;
       this.repairTarget = null;
       this.repairFrac = 0;
@@ -1156,13 +1441,27 @@ export class Tank {
   // Returns what the battle needs to spawn the screen, or null with nothing
   // spent. Launchers throw the pots out in front and short, which is what
   // makes smoke a thing you break contact behind rather than sit inside.
+  // Wave 8: the dischargers (Nebelwurfgerät, the 2-inch bomb thrower, the
+  // Sherman's turret mortar) are on the TURRET, so the screen goes where the
+  // turret faces, not the hull. `dir` is that horizontal direction.
   deploySmoke() {
     if (!this.alive || this.consumables.smoke <= 0) return null;
     this.consumables.smoke--;
-    const f = this.forwardDir(new THREE.Vector3());
+    const f = this.smokeDirection(new THREE.Vector3());
     const pos = this.position.clone().addScaledVector(f, 14);
     pos.y = terrainHeight(pos.x, pos.z) + 1.2;
-    return { pos, radius: 12, duration: 22, source: this };
+    return { pos, radius: 12, duration: 22, source: this, dir: f };
+  }
+
+  // Horizontal world direction the turret faces (the hull's for a casemate,
+  // whose "turret" is fixed). Read from the turret's world matrix so hull
+  // pitch and roll are folded in, then flattened.
+  smokeDirection(out = new THREE.Vector3()) {
+    this.turretGroup.updateWorldMatrix(true, false);
+    out.set(0, 0, 1).transformDirection(this.turretGroup.matrixWorld);
+    out.y = 0;
+    if (out.lengthSq() < 1e-6) return this.forwardDir(out);
+    return out.normalize();
   }
 
   updateFire(dt) {
@@ -2521,6 +2820,8 @@ export class Tank {
     this.burning = false;
     this.repairing = false;
     this.repairTarget = null;
+    this.repairSession = false;
+    this.repairHoldT = 0;
     this.speed = 0;
     this.rpm = 0;
     this.gear = 0;

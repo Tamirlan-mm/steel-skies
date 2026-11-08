@@ -170,6 +170,15 @@ const tmpTarget = new THREE.Vector3();
 const tmpUp = new THREE.Vector3();
 const tmpPlaneUp = new THREE.Vector3();
 
+// simulator head look (PlaneCamera.headLook): how far a strapped-in pilot can
+// turn (rad, relative to the nose; +yaw left) and how fast the view eases, 1/s
+const HEAD_YAW_MAX = 2.8;      // 160 deg: checking six over either shoulder
+const HEAD_PITCH_MIN = -0.7;
+const HEAD_PITCH_MAX = 1.4;
+const HEAD_RATE_HELD = 18;
+const HEAD_RATE_BACK = 7;
+const tmpHeadDir = new THREE.Vector3();
+
 // spring state slots in PlaneCamera.s
 const S_YAW = 0; // view yaw, unwrapped
 const S_YAW_V = 1;
@@ -252,9 +261,58 @@ function tripleDecay(s, i, w, dt) {
   }
 }
 
+// Wave 8: the tank cameras' view angles, chasing the raw mouse aim with the
+// same spring as the aircraft's. A mouse sampled per frame arrives as a count
+// that alternates, and a busy main thread now and then delivers none for a
+// frame and double the next: straight into the view that was a twitch of the
+// whole picture on every traverse, the worse the lower the frame rate. The
+// aim itself (the turret's order, the fire ray) stays the raw one.
+export class ViewSpring {
+  constructor() {
+    this.s = new Float64Array(4); // yaw (unwrapped), its rate, pitch, its rate
+    this.prevYaw = NaN;
+    this.prevPitch = NaN;
+  }
+
+  get yaw() {
+    return wrapAngle(this.s[0]);
+  }
+
+  get pitch() {
+    return this.s[2];
+  }
+
+  reset(yaw, pitch) {
+    this.s.fill(0);
+    this.s[0] = yaw;
+    this.s[2] = pitch;
+    this.prevYaw = yaw;
+    this.prevPitch = pitch;
+  }
+
+  // lead: how much of the aim's own rate the spring tracks (see springRamp).
+  // 0 trails a steady sweep by 2u/w; 1 does not trail it at all but passes more
+  // of the mouse's unevenness.
+  update(dt, yaw, pitch, lead = 0) {
+    if (Number.isNaN(this.prevYaw)) this.reset(yaw, pitch);
+    const s = this.s;
+    let dy = wrapAngle(yaw - this.prevYaw);
+    let dp = pitch - this.prevPitch;
+    // set, not swept (a respawn, a view handed over): no invented velocity
+    if (Math.abs(dy) > AIM_STEP || Math.abs(dy) > MAX_AIM_RATE * dt) dy = 0;
+    if (Math.abs(dp) > AIM_STEP || Math.abs(dp) > MAX_AIM_RATE * dt) dp = 0;
+    const ty1 = s[0] + wrapAngle(yaw - s[0]);
+    springRamp(s, 0, 1, ty1 - dy, ty1, SPRING.aim, dt, lead);
+    springRamp(s, 2, 3, pitch - dp, pitch, SPRING.aim, dt, lead);
+    this.prevYaw = yaw;
+    this.prevPitch = pitch;
+    if (s[0] > Math.PI * 4 || s[0] < -Math.PI * 4) s[0] = wrapAngle(s[0]);
+  }
+}
+
 // C1-continuous max: equal to max(a, b) away from the crossover, rounded over
 // a band of `k` metres around it, so a clamp engaging is a curve, not a kink.
-function smoothMax(a, b, k) {
+export function smoothMax(a, b, k) {
   const d = a - b;
   return (a + b + Math.sqrt(d * d + k * k)) * 0.5;
 }
@@ -294,6 +352,12 @@ export class PlaneCamera {
     // the chase view's near plane, restored when the cockpit view is left
     this.nearChase = camera && camera.near > 0 ? camera.near : 0.3;
     this._cockpitYaw = 0;
+    // simulator: the pilot's head, relative to the airframe (headLook())
+    this.headYaw = 0;
+    this.headPitch = 0;
+    this._headYawT = 0;
+    this._headPitchT = 0;
+    this._headPlane = null;
     // wave 6: the per-type cockpit layer (panel, dials, canopy frame,
     // gunsight), built on first use for the aeroplane being flown
     this.cockpitLayer = null;
@@ -342,14 +406,45 @@ export class PlaneCamera {
       this.addMouse(dx, dy, sens);
       return;
     }
-    tmpCamUp.set(0, 1, 0).applyQuaternion(q);
-    tmpRight.set(1, 0, 0).applyQuaternion(q);
+    if ((this.headYaw !== 0 || this.headPitch !== 0) && this._headPlane && this._headPlane.quat) {
+      // the head is still coming back: the sweep is measured on the windscreen
+      // (body +X is left, so screen-right is -X), not on the turned view
+      const bq = this._headPlane.quat;
+      tmpCamUp.set(0, 1, 0).applyQuaternion(bq);
+      tmpRight.set(-1, 0, 0).applyQuaternion(bq);
+    } else {
+      tmpCamUp.set(0, 1, 0).applyQuaternion(q);
+      tmpRight.set(1, 0, 0).applyQuaternion(q);
+    }
     const d = this.aimDirection(tmpAim);
     if (dx) d.applyAxisAngle(tmpCamUp, -dx * sens);
     if (dy) d.applyAxisAngle(tmpRight, -dy * sens);
     d.normalize();
     this.yaw = wrapAngle(Math.atan2(d.x, d.z));
     this.pitch = clamp(Math.asin(clamp(d.y, -1, 1)), this.minPitch, this.maxPitch);
+  }
+
+  // Simulator cockpit: the pilot turns his head. While `held` the mouse counts
+  // move the head (the raw aim, so the instructor, stays where it was); let go
+  // and the head comes back to the gunsight by itself. Only the view moves:
+  // the eye, the guns and the reflector sight stay on the airframe. Smoothed
+  // with an exact exponential, so it is frame-rate independent; exactly zero
+  // again once it is home, when the cockpit view is the rigid one to the bit.
+  headLook(dt, held, dx, dy, sens) {
+    if (held) {
+      this._headYawT = clamp(this._headYawT - (dx || 0) * sens, -HEAD_YAW_MAX, HEAD_YAW_MAX);
+      this._headPitchT = clamp(this._headPitchT - (dy || 0) * sens, HEAD_PITCH_MIN, HEAD_PITCH_MAX);
+    } else {
+      this._headYawT = 0;
+      this._headPitchT = 0;
+    }
+    const k = 1 - Math.exp(-(held ? HEAD_RATE_HELD : HEAD_RATE_BACK) * Math.max(0, dt));
+    this.headYaw += (this._headYawT - this.headYaw) * k;
+    this.headPitch += (this._headPitchT - this.headPitch) * k;
+    if (!held && Math.abs(this.headYaw) < 1e-3 && Math.abs(this.headPitch) < 1e-3) {
+      this.headYaw = 0;
+      this.headPitch = 0;
+    }
   }
 
   // H-03 / A-02: a world point on the gun line at infinity, as seen from the
@@ -396,6 +491,7 @@ export class PlaneCamera {
     }
     this.fov = this.fovChase;
     this.mode = 'none';
+    this.headYaw = this.headPitch = this._headYawT = this._headPitchT = 0;
   }
 
   // Mouse counts into the raw aim. `sens` is radians per count.
@@ -626,8 +722,23 @@ export class PlaneCamera {
       if (plane.quat) tmpPlaneUp.applyQuaternion(plane.quat);
       cam.position.copy(tmpEye);
       cam.up.copy(tmpPlaneUp);
-      cam.lookAt(tmpTarget.copy(tmpEye).addScaledVector(nose, 300));
-      this._cockpitYaw = Math.atan2(nose.x, nose.z);
+      this._headPlane = plane;
+      if ((this.headYaw !== 0 || this.headPitch !== 0) && plane.quat) {
+        // simulator head look: the view turned in the body frame (+Z nose,
+        // +Y up; a positive yaw turns from +Z toward +X, the same sense as
+        // the world's), with the head's own up so looking high stays upright
+        const sy = Math.sin(this.headYaw);
+        const cy = Math.cos(this.headYaw);
+        const sp = Math.sin(this.headPitch);
+        const cp = Math.cos(this.headPitch);
+        tmpHeadDir.set(sy * cp, sp, cy * cp).applyQuaternion(plane.quat);
+        cam.up.set(-sy * sp, cp, -cy * sp).applyQuaternion(plane.quat);
+        cam.lookAt(tmpTarget.copy(tmpEye).addScaledVector(tmpHeadDir, 300));
+        this._cockpitYaw = Math.atan2(tmpHeadDir.x, tmpHeadDir.z);
+      } else {
+        cam.lookAt(tmpTarget.copy(tmpEye).addScaledVector(nose, 300));
+        this._cockpitYaw = Math.atan2(nose.x, nose.z);
+      }
       // the zoom spring starts from the nose whenever the cockpit is left
       s[S_ZX] = nose.x;
       s[S_ZY] = nose.y;

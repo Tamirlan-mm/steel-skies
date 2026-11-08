@@ -27,36 +27,51 @@ import { gunnerPeriscope } from './stations.js';
 // Ammunition: the damage model's sponson bins and floor bin are kept as they
 // are (shells hit those boxes), only the crew sides are moved here.
 //
-// FRAMEWORK NOTE: combat/internals.js puts the Cromwell gunner LEFT and the
-// loader RIGHT (German order); the seats below follow the real tank, so the
-// X-ray crew boxes for those two are mirrored against what is drawn here.
+// combat/internals.js lays the Cromwell turret out in the same British order
+// (shape.gunnerRight, wave 8), so the X-ray crew boxes and these seats agree.
+//
+// WAVE 8 GEOMETRY (vehicles/tanks.js, Cromwell lane): the hull is a box
+// BETWEEN the tracks, spec.hull.bodyW = 2.08 m wide, and its bow is
+// spec.hull.nose — the vertical driver's plate stands at z = nose.plateZ
+// (2.05) from y = nose.plateY (1.18) to the roof (1.62), behind a long shallow
+// glacis to z 2.98. The room below stops at that plate.
 
 export default defineTankInterior('cromwell', (spec, base) => {
-  const t = spec.turret; // w 1.98, h 0.66, len 2.0
-  const hull = base.layout.hull; // floor 0.46, roof 1.70
-  const cu = spec.shape.cupola; // r 0.30, h 0.10, z -0.45 (right)
-  const cupX = -t.w * 0.26;
+  const t = spec.turret; // w 1.84, h 0.78, len 2.0, offZ 0.60
+  const cu = spec.shape.cupola; // r 0.30, h 0.09, x -0.42 (right), z -0.42
+  const cupX = cu.x ?? -t.w * 0.26;
   const blockY = t.h + cu.h * 0.62;
   const lh = spec.shape.loaderHatch; // x +0.45, z -0.40
-  const gm = spec.gunMount; // trunnions y 0.33, z 0.90
-  const roofOut = spec.hull.trackH + spec.hull.h; // 1.73
+  const gm = spec.gunMount; // trunnions y 0.39, z 0.90
+  const roofOut = spec.hull.trackH + spec.hull.h; // 1.62
+  const N = spec.hull.nose;
+  const hb = (spec.hull.bodyW ?? spec.hull.w) / 2; // 1.04
 
-  // the hull room: an upright box. The outside is a vertical driver's plate
-  // (y 0.84..1.50 at z 3.175) under a short glacis to the roof at z 2.875.
-  const frontZ = spec.hull.len / 2 - 0.075;
+  // the hull room: the inner face of the upright 64 mm front plate, walls
+  // inside the 2.08 m body (no sponsons: the tracks are outboard). The room's
+  // one-slope front cannot follow plate + glacis, so it stands at the plate:
+  // upright almost to the floor (the space under the glacis is not modelled)
+  const frontZ = N.plateZ - 0.07;
   const room = {
     frontZ,
-    glacisTopZ: 2.85,
-    lowFrontY: 1.48,
+    glacisTopZ: frontZ - 0.01,
+    lowFrontY: base.layout.hull.floorY + 0.3,
+    halfWidth: hb - 0.07,
+    lowerHalfWidth: hb - 0.11,
     // the fighting compartment ends at the engine bulkhead
-    rearZ: hull.firewallZ,
+    rearZ: base.layout.hull.firewallZ,
   };
+  const hull = { ...base.layout.hull, ...room };
 
-  // driver: eye behind the visor; the visor sits high in the front plate
-  const drv = [-0.6, 1.4, frontZ - 0.14];
-  // hull gunner: under his roof periscope, behind the Besa ball
-  const hg = [0.58, 1.46, 2.72];
-  const besaY = 1.29;
+  // driver: eye behind the visor (tanks.js cromwellDetails: x -0.45 hb, 52%
+  // up the front plate); the slit's window (eye + 0.12) lands just inside the
+  // room's front wall, the camera outside the visor box (index.js measures it)
+  const visorY = N.plateY + (roofOut - N.plateY) * 0.52;
+  const drv = [-hb * 0.45, visorY - 0.02, frontZ - 0.14];
+  // hull gunner: under his roof periscope, behind the Besa ball (tanks.js
+  // bowMg: x = 0.2 w, 45% of the way up the driver's plate)
+  const hg = [spec.hull.w * 0.2, 1.36, frontZ - 0.22];
+  const besaY = N.plateY + (roofOut - N.plateY) * 0.45;
   // the breech's rear face in the turret frame (gun level)
   const breechZ = gm.z - 0.4 - 0.2;
   const ldr = [lh.x + 0.03, 0.32, lh.z + 0.05];
@@ -95,7 +110,7 @@ export default defineTankInterior('cromwell', (spec, base) => {
         look: [0, 0],
         // the visor gate: the slit's hole lands just inside the front plate,
         // the camera (eye + dist + 0.1) just outside it
-        device: { type: 'slit', w: 0.24, h: 0.06, dist: 0.12, bezel: 0.03, depth: 0.08 },
+        device: { type: 'slit', w: 0.24, h: 0.06, dist: 0.12, bezel: 0.03, depth: 0.07 },
         hatch: { eye: [drv[0], roofOut + 0.6, drv[2] - 0.2], fov: 70 },
         seat: [drv[0], 1.0, drv[2] - 0.12],
       },
@@ -129,8 +144,8 @@ export default defineTankInterior('cromwell', (spec, base) => {
       hatches: [
         { frame: 'turret', pos: [cupX, t.h + cu.h - 0.05, cu.z], r: cu.r * 0.86, cupola: { r: cu.r, y0: t.h - 0.04, y1: t.h + cu.h - 0.04 } },
         { frame: 'turret', pos: [lh.x, t.h - 0.04, lh.z], r: lh.r * 0.95 },
-        { frame: 'hull', pos: [drv[0], hull.roofY, drv[2] - 0.3], r: 0.25 },
-        { frame: 'hull', pos: [hg[0], hull.roofY, hg[2] - 0.2], r: 0.25 },
+        { frame: 'hull', pos: [drv[0], hull.roofY, N.plateZ - 0.22], r: 0.2 },
+        { frame: 'hull', pos: [hg[0], hull.roofY, N.plateZ - 0.22], r: 0.2 },
       ],
       extras: [
         // radio shelf
@@ -150,18 +165,18 @@ export default defineTankInterior('cromwell', (spec, base) => {
         { frame: 'turret', pos: [t.w / 2 - 0.15, 0.05, 0.2], size: [0.14, 0.24, 0.32], color: 0x4a4d48 },
         { frame: 'turret', pos: [0.32, t.h - 0.2, 0.55], cyl: true, r: 0.03, len: 0.35, axis: 'y' },
         // the bulkhead between the driver and the hull gunner
-        { frame: 'hull', pos: [0, (hull.floorY + hull.roofY) / 2, frontZ - 0.45], size: [0.03, hull.roofY - hull.floorY - 0.05, 0.75] },
+        { frame: 'hull', pos: [0, (hull.floorY + hull.roofY) / 2, frontZ - 0.26], size: [0.03, hull.roofY - hull.floorY - 0.05, 0.5] },
         // the driver's two roof periscopes, over and ahead of his head
-        { frame: 'hull', pos: [drv[0] - 0.13, hull.roofY - 0.08, drv[2] - 0.32], size: [0.13, 0.16, 0.09] },
-        { frame: 'hull', pos: [drv[0] + 0.13, hull.roofY - 0.08, drv[2] - 0.32], size: [0.13, 0.16, 0.09] },
+        { frame: 'hull', pos: [drv[0] - 0.13, hull.roofY - 0.08, drv[2] - 0.18], size: [0.13, 0.16, 0.09] },
+        { frame: 'hull', pos: [drv[0] + 0.13, hull.roofY - 0.08, drv[2] - 0.18], size: [0.13, 0.16, 0.09] },
         // the visor's hinge bar and operating handle
         { frame: 'hull', pos: [drv[0], drv[1] + 0.09, frontZ - 0.04], size: [0.34, 0.03, 0.04], color: 0x2a2b28 },
         { frame: 'hull', pos: [drv[0] - 0.22, drv[1] - 0.02, frontZ - 0.08], size: [0.03, 0.12, 0.1], color: 0x2a2b28 },
         // the hull Besa ball in the upright plate, the gun and its No. 35
         // telescope, and the belt box
         { frame: 'hull', pos: [hg[0], besaY, frontZ - 0.05], cyl: true, r: 0.13, len: 0.1, axis: 'z' },
-        { frame: 'hull', pos: [hg[0], besaY, frontZ - 0.33], size: [0.09, 0.12, 0.48], color: 0x2a2b28 },
-        { frame: 'hull', pos: [hg[0] - 0.09, besaY + 0.07, frontZ - 0.25], cyl: true, r: 0.025, len: 0.4, axis: 'z', color: 0x2a2b28 },
+        { frame: 'hull', pos: [hg[0], besaY, frontZ - 0.28], size: [0.09, 0.12, 0.44], color: 0x2a2b28 },
+        { frame: 'hull', pos: [hg[0] - 0.09, besaY + 0.07, frontZ - 0.22], cyl: true, r: 0.025, len: 0.36, axis: 'z', color: 0x2a2b28 },
         { frame: 'hull', pos: [hg[0] + 0.14, besaY - 0.12, frontZ - 0.35], size: [0.12, 0.14, 0.24], color: 0x4a4d48 },
         // fire extinguisher on the driver's side wall
         { frame: 'hull', pos: [-hull.halfWidth + 0.12, hull.sponsonY + 0.28, frontZ - 0.75], cyl: true, r: 0.07, len: 0.45, color: 0x8a2a20 },

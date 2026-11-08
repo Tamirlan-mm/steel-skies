@@ -141,7 +141,11 @@ export function buildInternals(spec) {
   let mods = layoutCache.get(spec);
   if (mods) return mods;
 
-  const { w, h, len, trackH } = spec.hull;
+  const { h, len, trackH } = spec.hull;
+  // Cromwell (wave 8): its hull is a box BETWEEN the tracks (hull.bodyW,
+  // 2.08m of the 2.908m), so everything inside is laid out across that body,
+  // not across the tracks. Every other spec has no bodyW and is unchanged.
+  const w = spec.hull.bodyW ?? spec.hull.w;
   const t = spec.turret;
   const midY = trackH + h * 0.5; // fighting-compartment centre line
   // The interior runs from the belly plate to the roof, not from the top of
@@ -179,12 +183,20 @@ export function buildInternals(spec) {
   // +X is the vehicle's left. Everyone here drives from the left except the
   // right-hand-drive Cromwell, whose hull gunner sits on the left instead.
   const dSide = spec.shape && spec.shape.driverRight ? -1 : 1;
+  // British turret order (Cromwell, shape.gunnerRight): gunner RIGHT of the
+  // gun with the commander behind him, loader left — the German order below
+  // mirrored, and the commander set further back so he sits behind the
+  // gunner rather than on top of him
+  const gR = spec.shape && spec.shape.gunnerRight ? -1 : 1;
+  // The Cromwell's upright driver's plate stands well back (hull.nose.plateZ):
+  // the two bow seats sit right behind it, not out under the shallow glacis.
+  const plateZ = spec.hull.nose ? spec.hull.nose.plateZ : Infinity;
   const seats = {
-    driver: ['hull', V(dSide * Math.max(w * 0.24, bowX), floor + H * 0.5, len * 0.3)],
-    radio: ['hull', V(-dSide * Math.max(w * 0.26, bowX), floor + H * 0.5, len * 0.28)],
-    gunner: ['turret', V(t.w * 0.26, t.h * 0.42 - 0.2, -t.len * 0.02)],
-    loader: ['turret', V(-t.w * 0.28, t.h * 0.4 - 0.2, t.len * 0.05)],
-    commander: ['turret', V(-t.w * 0.2, t.h * 0.52 - 0.2, -t.len * 0.22)],
+    driver: ['hull', V(dSide * Math.max(w * 0.24, bowX), floor + H * 0.5, Math.min(len * 0.3, plateZ - 0.35))],
+    radio: ['hull', V(-dSide * Math.max(w * 0.26, bowX), floor + H * 0.5, Math.min(len * 0.28, plateZ - 0.37))],
+    gunner: ['turret', V(gR * t.w * 0.26, t.h * 0.42 - 0.2, -t.len * 0.02)],
+    loader: ['turret', V(-gR * t.w * 0.28, t.h * 0.4 - 0.2, t.len * 0.05)],
+    commander: ['turret', V(gR < 0 ? -t.w * 0.22 : -t.w * 0.2, t.h * 0.52 - 0.2, gR < 0 ? -t.len * 0.3 : -t.len * 0.22)],
   };
   const crewBoxes = [];
   let turretCrewX = 0; // how far out the turret crew reach either side (yaw 0)
@@ -265,10 +277,10 @@ export function buildInternals(spec) {
   // laying gear: the traverse motor sits on the turret floor at the ring, the
   // elevation gear on the trunnion beside the breech
   mods.push(box('traverse', 'traverse', 'turret',
-    V(t.w * 0.3, t.h * 0.13, t.len * 0.08), V(t.w * 0.12, t.h * 0.13, t.len * 0.1),
+    V(gR * t.w * 0.3, t.h * 0.13, t.len * 0.08), V(t.w * 0.12, t.h * 0.13, t.len * 0.1),
     'Turret drive'));
   mods.push(box('elevation', 'elevation', 'turret',
-    V(-t.w * 0.21, t.h * 0.3, t.len * 0.17), V(t.w * 0.1, t.h * 0.15, t.len * 0.09),
+    V(-gR * t.w * 0.21, t.h * 0.3, t.len * 0.17), V(t.w * 0.1, t.h * 0.15, t.len * 0.09),
     'Elevation drive'));
 
   // roomy turrets carry ready rounds in the bustle

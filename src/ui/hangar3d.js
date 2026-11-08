@@ -76,7 +76,20 @@ const STAGE_POST_TIER = Object.freeze({ low: 'low', medium: 'medium', high: 'med
 // casting it changed. A static cap, not a GPU-timer loop: an integrated GPU
 // clocks down under a light load, a timer then reads long, and a loop chasing
 // it spirals the stage down to its floor.
-const STAGE_MAX_PIXELS = { low: 0.5e6, medium: 0.8e6, high: 0.9e6 };
+//
+// Wave 8 QA: those caps (0.5 / 0.8 / 0.9 MP) drew the stage at 0.55 scale on a
+// 2560x1440 monitor, and it looked it: the first screen of the game was the
+// softest. The stage is the whole frame in a menu, so the caps now spend the
+// 60 Hz frame rather than the old 6.4 ms, and a 1440p canvas (2.3-2.6 MP) is
+// native on medium and high. Measured on Iris Xe (frozen build, 2214x1040
+// canvas, timer queries around update(), medians), medium tier:
+//   0.8 MP 3.9-5.1 ms | 2.3 MP 10.9-12.6 ms (p90 <= 13.4), meadow noon and dawn,
+//   winter noon and dawn, steppe dusk; low tier 2.3 MP 8.5, 1.47 MP 6.0 ms
+// which is about 1 ms + 4.8 ms/MP: 2.7 MP is about 14 ms, inside 16.7 ms.
+const STAGE_MAX_PIXELS = { low: 1.5e6, medium: 2.7e6, high: 3.7e6 };
+// A touch device (setDeviceCap) has a small screen, a thermal limit and nothing
+// measured above these, so it keeps the caps the mobile pass was tuned on.
+const STAGE_TOUCH_MAX_PIXELS = { low: 0.5e6, medium: 0.8e6, high: 0.9e6 };
 // opaque draw order on the stage: everything else (vehicle, slab, backdrop) 0
 const STAGE_ORDER = Object.freeze({ terrain: 1, sky: 2 });
 // The turret's idle sweep turns at most 0.03 rad/s and the props are a blur:
@@ -1338,6 +1351,12 @@ export class Hangar3D {
     this.resize();
   }
 
+  // the drawing buffer's pixel budget for this tier and device class
+  maxPixels() {
+    const table = Number.isFinite(this.deviceCap) ? STAGE_TOUCH_MAX_PIXELS : STAGE_MAX_PIXELS;
+    return table[this.quality] || table.high;
+  }
+
   // device pixels x the tier's cap, then scaled under STAGE_MAX_PIXELS (L-09)
   applyPixelRatio() {
     if (!this.renderer) return;
@@ -1346,7 +1365,7 @@ export class Hangar3D {
     const w = (this.canvas && this.canvas.clientWidth) | 0;
     const h = (this.canvas && this.canvas.clientHeight) | 0;
     const px = w * h * base * base;
-    const cap = STAGE_MAX_PIXELS[this.quality] || STAGE_MAX_PIXELS.high;
+    const cap = this.maxPixels();
     this.renderScale = px > cap ? Math.sqrt(cap / px) : 1;
     const ratio = base * this.renderScale;
     if (Math.abs(this.renderer.getPixelRatio() - ratio) > 1e-4) this.renderer.setPixelRatio(ratio);
@@ -1363,7 +1382,7 @@ export class Hangar3D {
       pixelRatio: this.renderer ? +this.renderer.getPixelRatio().toFixed(3) : 0,
       deviceCap: Number.isFinite(this.deviceCap) ? this.deviceCap : null,
       buffer: el ? [el.width, el.height] : null,
-      maxPixels: STAGE_MAX_PIXELS[this.quality] || STAGE_MAX_PIXELS.high,
+      maxPixels: this.maxPixels(),
       shadowEvery: SHADOW_EVERY,
       dof: dp ? {
         on: this.dofWanted(),

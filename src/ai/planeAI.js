@@ -4,11 +4,27 @@ import * as THREE from 'three';
 // it), and the tops of the buildings on them. Ground avoidance that read only
 // the terrain flew attack runs on airfield guns straight into the fill.
 import { groundHeightAt, groundSurfaceAt, obstacleTopAt, airfieldAtPoint } from '../world/airfield.js';
+import { GRAV as FLIGHT_GRAV, PLANE_SPEED_SCALE } from '../vehicles/planes.js';
 import { clamp, moveToward, rand, wrapAngle } from '../core/utils.js';
 // The two ground modes publish capture zones in two different shapes; readZones
 // is the single normaliser both AI files go through, so an aeroplane and a tank
 // can never end up with a different idea of who holds what.
 import { readZones } from './tankAI.js';
+// SIMULATOR (battle.simulator): a pilot's eyes instead of a radar
+import { BotVision, SIM_VISION, airDetectMult, tankDetectMult } from '../game/simRules.js';
+
+// Terrain between two points (simulator vision only): a hill hides an
+// aeroplane as well as a tank. Coarse — 10 samples — and cheap.
+function terrainClear(a, b) {
+  for (let i = 1; i < 10; i++) {
+    const f = i / 10;
+    const x = a.x + (b.x - a.x) * f;
+    const y = a.y + (b.y - a.y) * f;
+    const z = a.z + (b.z - a.z) * f;
+    if (groundHeightAt(x, z) > y + 0.5) return false;
+  }
+  return true;
+}
 // the engine wear an oil leak causes, for the engine-life estimate (engineLife)
 import { OIL_ENGINE_WEAR } from '../vehicles/planeEntity.js';
 
@@ -18,8 +34,11 @@ const tmpRel = new THREE.Vector3();
 const tmpSide = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
-// The flight model's gravity, for the specific-energy sums below.
-const GRAV = 9.8;
+// The flight model's gravity, for the specific-energy sums below, and K, the
+// world speed of aircraft (planes.js PLANE_SPEED_SCALE): every m/s literal in
+// this file is written at design scale and goes through it.
+const GRAV = FLIGHT_GRAV;
+const K = PLANE_SPEED_SCALE;
 
 // A sustained turn now genuinely descends, so the floor is both higher and
 // looked at further ahead than the old attitude-chaser ever needed.
@@ -40,7 +59,7 @@ const MAP_WALL = 1170;
 // g net: v^2 / (2 * 2g).
 function pullOutHeight(p) {
   const vy = p.vel ? p.vel.y : p.dir.y * p.speed;
-  return vy < 0 ? (vy * vy) / 40 : 0;
+  return vy < 0 ? (vy * vy) / (40 * K) : 0;
 }
 
 // Nothing up here is worth the climb: the air is thin, the engines fall off
@@ -134,8 +153,9 @@ const RTB_GATE_U = RTB_FINAL_U + 100; // ...and how far out it is
 const RTB_FINAL_U_GROUND = 560;
 const RTB_TD_RUNWAY = 45; // touchdown aim point, metres in from the threshold
 const RTB_TD_GRASS = 40;
-const RTB_HOLD_MAX = 480; // seconds holding for a lane before giving up...
-const RTB_HOLD_MAX_IDLE = 60; // ...or, for a routine end of sortie, going back to work
+// (an arrival ahead keeps the lane 1 / K as long: a metric circuit at K x the speed)
+const RTB_HOLD_MAX = 480 / PLANE_SPEED_SCALE; // seconds holding for a lane before giving up...
+const RTB_HOLD_MAX_IDLE = 60 / PLANE_SPEED_SCALE; // ...or, for a routine end of sortie, going back to work
 // Who gets a lane first when several are waiting: the shot-up and the dry
 // before the merely empty, and those before a routine end of sortie.
 const RTB_PRIORITY = { damage: 0, fuel: 0, ground: 0, ammo: 1, ordnance: 1, timer: 2 };
@@ -212,7 +232,7 @@ const DITCH_TD = 105;
 const DITCH_SLOPE = 0.08;
 // ...for a type that glides at 30 m/s: the touchdown zone allows VS_K / vT
 // (the slope met at flying speed is a closure of speed x slope)
-const VS_K = 2.4;
+const VS_K = 2.4 * PLANE_SPEED_SCALE;
 const DITCH_CROSS = 0.06;
 const DITCH_SEARCH = 2600;
 // Beyond the slide: the ground an aeroplane that floats long, or slides on
@@ -555,16 +575,48 @@ export class PlaneAI {
     let threat = null;
     let threatScore = 0.12; // below this nobody is really a threat
     const myE = this.energy(p);
+    // simulator: only what this pilot has seen — in his search field, over
+    // the terrain, picked out (BotVision) and, to be attacked, recognised
+    const vis = this.simVision();
+    let sweepDt = 0;
+    if (vis) {
+      sweepDt = this._visAt == null ? 1 : vis.clock - this._visAt;
+      this._visAt = vis.clock;
+      vis.beginSweep();
+    }
 
     for (const o of this.battle.planes) {
       if (!o.alive || o.team === p.team) continue;
       const d = p.position.distanceTo(o.position);
+      let known = true;
+      // (SIM_VISION.air.playerOnly: bot against bot stays at realistic pace)
+      if (vis && (o.isPlayer || !SIM_VISION.air.playerOnly)) {
+        let seen = false;
+        if (d < SIM_VISION.air.trackRange && terrainClear(p.position, o.position)) {
+          tmpRel.subVectors(o.position, p.position);
+          // a known bandit is followed by eye — but one out of the search
+          // field and well away has to be found again
+          const fwd = (tmpRel.x * p.dir.x + tmpRel.y * p.dir.y + tmpRel.z * p.dir.z) / Math.max(1, d);
+          if (vis.detected(o)) {
+            if (d < SIM_VISION.air.trackRearRange || fwd >= SIM_VISION.air.coneCos) seen = vis.track(o);
+          } else {
+            const m = airDetectMult(p.dir, tmpRel, d, o, {
+              attacker: o === p.lastAttacker && p.lastHitAge < 4,
+            });
+            seen = vis.observe(o, d, m, sweepDt);
+          }
+        }
+        if (!seen) continue; // out of sight: neither a target nor a threat
+        known = vis.knows(o);
+      }
       // a bandit below us is a bandit we can dive on, which is the only free
       // shot in the sky — but one sitting on its own airfield is a strafing
       // run into the hangars and the field's AA, not a dogfight
-      const score = d + (o.isPlayer ? -120 : 0) + (this.energy(o) < myE ? -90 : 0) +
+      // (simulator: a pilot cannot tell which aeroplane has the human in it)
+      const score = d + (o.isPlayer && !vis ? -120 : 0) + (this.energy(o) < myE ? -90 : 0) +
         (o.onGround ? 650 : 0);
-      if (score < bestScore) {
+      // (simulator: a contact still being made out is not attacked yet)
+      if (known && score < bestScore) {
         bestScore = score;
         best = o;
       }
@@ -581,9 +633,20 @@ export class PlaneAI {
         }
       }
     }
+    if (vis) vis.endSweep();
     this.target = best;
     this.threat = threat;
     this.threatLevel = threat ? threatScore : 0;
+  }
+
+  // SIMULATOR (game/simRules.js): this pilot's eyes, or null outside it
+  simVision() {
+    if (!this.battle || !this.battle.simulator) return null;
+    if (!this._vision) {
+      this._vision = new BotVision('air');
+      this._groundVision = new BotVision('ground');
+    }
+    return this._vision;
   }
 
   // ---------------------------------------------------------------------
@@ -778,13 +841,30 @@ export class PlaneAI {
     // The second term is the anti-bait clause: a bandit going vertical is not
     // an invitation to follow him to the top of the sky.
     this.steerPoint.y = Math.min(this.steerPoint.y, CEILING, p.position.y + 220);
-    const err = dist * 0.008 * this.aimErr;
+    // (simulator: a pilot with no lead computer, judging it by eye)
+    const eyeball = this._vision && (t.isPlayer || !SIM_VISION.air.playerOnly);
+    const err = (eyeball ? Math.max(dist, SIM_VISION.air.aimFloor) * SIM_VISION.air.aimMult : dist) * 0.008 * this.aimErr;
+    if (eyeball) {
+      // a misjudged deflection is held for a moment: noise drawn anew every
+      // frame averages out in the aeroplane's response and costs him nothing
+      const now = this.battle.time || 0;
+      if (!(now < this._eyeUntil)) {
+        this._eyeUntil = now + rand(0.7, 1.3);
+        this._eyeX = rand(-err, err);
+        this._eyeY = rand(-err, err) * 0.7;
+        this._eyeZ = rand(-err, err);
+      }
+      this.steerPoint.x += this._eyeX;
+      this.steerPoint.y += this._eyeY;
+      this.steerPoint.z += this._eyeZ;
+    } else {
     this.steerPoint.x += rand(-err, err);
     this.steerPoint.y += rand(-err, err) * 0.7;
     this.steerPoint.z += rand(-err, err);
+    }
     // closing fast on a slower aeroplane is how you end up in front of it
     const closing = p.speed - t.speed;
-    if (dist < 130 && closing > 12) {
+    if (dist < 130 && closing > 12 * K) {
       p.throttle = 0.45;
       this.wantBrake = true;
     } else {
@@ -845,6 +925,10 @@ export class PlaneAI {
     }
 
     this.retarget -= dt;
+    if (this._vision) {
+      this._vision.tick(dt);
+      this._groundVision.tick(dt);
+    }
     if (this.retarget <= 0) {
       this.retarget = rand(0.7, 1.2);
       this.scan();
@@ -1060,7 +1144,7 @@ export class PlaneAI {
   // arrested, at about two g).
   headingForWall(vx, vz, vy = 0) {
     const vh = Math.hypot(vx, vz);
-    if (vh < 5) return false;
+    if (vh < 5 * K) return false;
     const reach = (vh * vh) / (GRAV * 4.5) + 80 + (vy < 0 ? (vh * -vy) / (2 * GRAV) : 0);
     const fx = this.plane.position.x + (vx / vh) * reach;
     const fz = this.plane.position.z + (vz / vh) * reach;
@@ -1615,7 +1699,7 @@ export class PlaneAI {
     // that ran away past the limit with them out has them brought up by
     // rtbSystems)
     if (gearDown && !p.gear && !p.gearGone && p.ias < p.gearLim.vlo * 0.95 &&
-      !(this.rtb && this.rtb.phase === 'transit' && p.vel.y < -4)) p.toggleGear();
+      !(this.rtb && this.rtb.phase === 'transit' && p.vel.y < -4 * K)) p.toggleGear();
     // (and an aeroplane told to clean up raises them, not above the circuit)
     else if (!gearDown && p.gear && !p.onGround && this.rtb && this.rtb.phase === 'transit' &&
       p.ias > p.gearLim.vle * 0.9) p.toggleGear();
@@ -1628,7 +1712,7 @@ export class PlaneAI {
   rtbSpeed(target, dt, brakeOver = 6) {
     const r = this.rtb;
     const p = this.plane;
-    const err = target - p.speed;
+    const err = (target - p.speed) / K; // gains and brakeOver are design-scale m/s
     r.integ = clamp(r.integ + err * dt * 0.08, -0.3, 0.6);
     p.throttle = clamp(0.35 + err * 0.12 + r.integ, 0, 1);
     this.wantBrake = err < -brakeOver;
@@ -2026,7 +2110,7 @@ export class PlaneAI {
           this.rtbSpeed(target, dt);
         }
         this.rtbConfigure(true, p.gearPos >= 1 ? 3 : 2);
-        if (!r.configured && p.gearPos >= 1 && p.flaps === 3 && v < vApp + 4) r.configured = true;
+        if (!r.configured && p.gearPos >= 1 && p.flaps === 3 && v < vApp + 4 * K) r.configured = true;
         const rh = p.rideHeight(0);
         const gsY = r.runwayY + rh + Math.max(0, u) * r.tanG;
         let pathY = r.configured ? Math.min(gsY, r.levelY) : r.levelY;
@@ -2043,7 +2127,7 @@ export class PlaneAI {
         const hWheel = pos.y - Math.max(surfY, r.runwayY) - rh;
         let vyDes;
         if (r.phase === 'final') {
-          vyDes = (r.configured ? -v * r.tanG : 0) + clamp((pathY - pos.y) * 0.35, -4, 4);
+          vyDes = (r.configured ? -v * r.tanG : 0) + clamp((pathY - pos.y) * 0.35, -4 * K, 4 * K);
           if (u < 0) vyDes = Math.max(vyDes, -1.2);
           if (hWheel < 7 && u < r.tdIn + 120) this.setRtbPhase('flare');
           // the go-around gates: not configured, off the centreline, high,
@@ -2077,7 +2161,7 @@ export class PlaneAI {
           // floated past where the roll-out still fits (hard braking, a
           // margin), or drifted off the lane: go round
           const remain = (pos.x - (r.edgeOuter + d * 28)) * d;
-          if (remain < (v * v) / 7 + 25 || Math.abs(w) > (r.grass ? 3.5 : 8)) {
+          if (remain < (v * v) / (7 * K) + 25 || Math.abs(w) > (r.grass ? 3.5 : 8)) {
             if (!this.rtbGoAround(Math.abs(w) > (r.grass ? 3.5 : 8) ? 'flare: off the lane' : 'flare: floated')) return false;
             break;
           }
@@ -2622,7 +2706,7 @@ export class PlaneAI {
     r.dsVPrev = v;
     r.dsAcc = r.dsAcc == null ? acc : r.dsAcc + (acc - r.dsAcc) * Math.min(1, dt * 3);
     let n;
-    if (vyCmd != null) n = Math.cos(gam) / cphi + (vyCmd - p.vel.y) * 0.12;
+    if (vyCmd != null) n = Math.cos(gam) / cphi + ((vyCmd - p.vel.y) * 0.12) / K;
     else n = Math.cos(gam) / cphi + (0.55 * (v - vT) + 2 * r.dsAcc) / GRAV;
     const vr = v / Math.max(p.stallSpeedNow(), 1);
     // (the forced landing's round-out may use more of the wing: a few
@@ -2817,7 +2901,7 @@ export class PlaneAI {
       hw: Math.max(3, (p.spec.span || 12) * 0.5 - 0.5),
       // 2.4 m/s of closure from the ground at the glide's speed, on top of
       // the touchdown's own sink, inside the slide's 3.8 (0.08 at 30 m/s)
-      slTd: clamp(VS_K / Math.max(20, g.vT), 0.05, DITCH_SLOPE),
+      slTd: clamp(VS_K / Math.max(20 * K, g.vT), 0.05, DITCH_SLOPE),
       // the cross-slope the wingtips clear, wings level, on the belly
       tol: p.gearGeo ? Math.max(0.06, (p.gearGeo.tipY - p.gearGeo.bellyY) / Math.max(1, p.gearGeo.tipX)) : 0.15,
       // low down, a turn is the most expensive thing there is
@@ -3064,9 +3148,9 @@ export class PlaneAI {
         if (hTd > 8 && (togo < 0 || tanD > g.tanStr * 1.8)) {
           s.dive = true;
           // (never a dive the round-out cannot take out again low down)
-          vyCmd = -clamp(v * Math.min(Math.max(tanD, 0.12), 0.32), 2, Math.min(9, 2 + agl * 0.12));
+          vyCmd = -clamp(v * Math.min(Math.max(tanD, 0.12), 0.32), 2 * K, Math.min(9 * K, 2 * K + agl * 0.12));
           // (never faster than the flaps and the glide want)
-          if (v > g.vT * 1.3) vyCmd = Math.max(vyCmd, p.vel.y + 1);
+          if (v > g.vT * 1.3) vyCmd = Math.max(vyCmd, p.vel.y + 1 * K);
         }
       } else {
         const path = dubins(pos.z, pos.x, psi, ez, ex, s.psi, g.R, r.dsWord2 || null, {});
@@ -3127,8 +3211,8 @@ export class PlaneAI {
     let flare = false;
     const vrr = v / Math.max(p.stallSpeedNow(), 1);
     const aArr = GRAV * Math.max(0.06, Math.min(1.5, 0.95 * vrr * vrr) - 1);
-    const hArr = Math.max(0, sinkRel * sinkRel - 1.44) / (2 * aArr) + 2;
-    if (hBelly < Math.max(6, sinkRel * 1.8, hArr)) {
+    const hArr = Math.max(0, sinkRel * sinkRel - 1.44 * K * K) / (2 * aArr) + 2 * K;
+    if (hBelly < Math.max(6 * K, sinkRel * 1.8, hArr)) {
       // A belly landing needs no flare to the stall: the slide takes any
       // speed under 2.4 x the stall, and what kills is a float. Held at a
       // few tenths of a metre a second the aeroplane floated hundreds of
@@ -3162,13 +3246,13 @@ export class PlaneAI {
           sMax = Math.max(sMax, (gi - prevG) / (vh * 0.5));
           prevG = gi;
         }
-        floorVy = Math.min(-2.6, Math.max(-5, vh * sMax - 2.4));
+        floorVy = Math.min(-2.6 * K, Math.max(-5 * K, vh * sMax - 2.4 * K));
       }
-      vyCmd = Math.max(vh * sl - clamp((s && s.past ? 1.2 : 1.0) + hBelly * 0.22, 1.0, 2.4), floorVy);
+      vyCmd = Math.max(vh * sl - clamp((s && s.past ? 1.2 : 1.0) * K + hBelly * 0.22, 1.0 * K, 2.4 * K), floorVy);
       flare = true;
       phi = 0;
     } else if (s && s.past && vyCmd == null && hBelly < 16) {
-      vyCmd = vh * slope - 2.0;
+      vyCmd = vh * slope - 2.0 * K;
     }
     this.dsPilot(dt, phi, g.vT, vyCmd, flare);
   }
@@ -3282,7 +3366,7 @@ export class PlaneAI {
       // (the height it takes to arrest the sink at ~0.3 g, plus a moment
       // to begin)
       const sink = Math.max(0, -p.vel.y);
-      if (hWheel < clamp((sink * sink) / 5 + 0.6 * sink, 4.5, 14) && u < uNear + 60) this.setRtbPhase('flare');
+      if (hWheel < clamp((sink * sink) / (5 * K) + 0.6 * sink, 4.5 * K, 14 * K) && u < uNear + 60) this.setRtbPhase('flare');
     }
     // the rung: gear, flaps (a stage at a time, each below its limit), brake
     const [gWant, fWant, bWant] = DS_LADDER[r.dsLvl == null ? top : r.dsLvl];
@@ -3295,7 +3379,7 @@ export class PlaneAI {
     // unless it is floating toward the end of the runway: without an
     // engine the float is the danger then, not the sink)
     const remainF = (pos.x - (r.edgeOuter + d * 28)) * d;
-    this.wantBrake = bWant && (r.phase !== 'flare' || remainF < (v * v) / 5 + 60);
+    this.wantBrake = bWant && (r.phase !== 'flare' || remainF < (v * v) / (5 * K) + 60);
     let vyDes;
     if (r.phase === 'flare') {
       p.throttle = 0;
@@ -3305,7 +3389,7 @@ export class PlaneAI {
       // floating past where the roll-out still fits: no going round, so
       // put it on, firmly
       const remain = (pos.x - (r.edgeOuter + d * 28)) * d;
-      if (remain < (v * v) / 7 + 25) vyDes = Math.min(vyDes, -1.4);
+      if (remain < (v * v) / (7 * K) + 25) vyDes = Math.min(vyDes, -1.4 * K);
     } else if (power && tanReq < tBot * 0.97) {
       // short, with an engine: fly the line on the throttle
       vyDes = -v * tanReq;
@@ -3316,10 +3400,10 @@ export class PlaneAI {
       // The instructor points the nose; it does not hold a speed, and the
       // pointing error it settles with costs the glide its speed. So the
       // speed error has an integral as well as a proportional term.
-      r.dsVI = clamp((r.dsVI || 0) + (vT - v) * dt * 0.12, -1, 2);
+      r.dsVI = clamp((r.dsVI || 0) + (vT - v) * dt * 0.12, -1 * K, 2 * K);
       vyDes = -v * p.glideTan() - 0.7 * (vT - v) - r.dsVI;
-      if (v < vsNow * 1.12) vyDes = Math.min(vyDes, -2);
-      vyDes = clamp(vyDes, -v * 0.4, 1);
+      if (v < vsNow * 1.12) vyDes = Math.min(vyDes, -2 * K);
+      vyDes = clamp(vyDes, -v * 0.4, 1 * K);
     }
     const az = pos.z - clamp(3 * w + 1.5 * p.vel.z, -154, 154);
     this.rtbAim(pos.x - d * 220, az, vyDes);
@@ -3569,8 +3653,24 @@ export class PlaneAI {
     const zones = readZones(this.battle);
     const team = this.plane.team;
     let best = Infinity;
+    // simulator: an armoured vehicle has to be seen from the cockpit (over
+    // the terrain, picked out of the ground) before it is dived on; static
+    // objectives and columns stay on the briefing map
+    const gv = this.simVision() ? this._groundVision : null;
+    let gDt = 0;
+    if (gv) {
+      gDt = this._gVisAt == null ? 3 : gv.clock - this._gVisAt;
+      this._gVisAt = gv.clock;
+      gv.beginSweep();
+    }
+    const pp = this.plane.position;
     for (const g of list) {
       if (!g.alive) continue;
+      if (gv && (g.isPlayer || !SIM_VISION.air.playerOnly) && g.spec && g.spec.hull && !g.isColumn) {
+        const gd = pp.distanceTo(g.position);
+        if (gd > SIM_VISION.ground.range * 1.6 || !terrainClear(pp, g.position)) continue;
+        if (!gv.observe(g, gd, tankDetectMult(g, this.battle.time || 0) / 0.8, gDt) || !gv.knows(g)) continue;
+      }
       // The old rule was "nearest living hull", which sent every striker after
       // whatever happened to be closest to the airfield while the capture
       // points went unopposed. Range still leads, but a tank standing on a
@@ -3601,6 +3701,11 @@ export class PlaneAI {
         best = s;
         this.groundTarget = g;
       }
+    }
+    if (gv) {
+      gv.endSweep();
+      // a hull not yet made out: look again soon rather than in 3 s
+      if (!this.groundTarget) this.gRetarget = 1;
     }
     return this.groundTarget;
   }

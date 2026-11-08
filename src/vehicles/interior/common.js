@@ -99,13 +99,21 @@ varying float vDist;
 varying vec2 vUv;
 #endif
 void main() {
-  vec4 wp = modelMatrix * vec4(position, 1.0);
+#ifdef USE_INSTANCING
+  mat4 mm = modelMatrix * instanceMatrix;
+#else
+  mat4 mm = modelMatrix;
+#endif
+  vec4 wp = mm * vec4(position, 1.0);
   vWorld = wp.xyz;
-  vN = normalize(mat3(modelMatrix) * normal);
+  vN = normalize(mat3(mm) * normal);
 #ifdef USE_COLOR
   vCol = color;
 #else
   vCol = vec3(1.0);
+#endif
+#ifdef USE_INSTANCING_COLOR
+  vCol *= instanceColor;
 #endif
 #ifdef LAYER_UV
   vUv = uv;

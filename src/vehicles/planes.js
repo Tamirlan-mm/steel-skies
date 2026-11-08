@@ -73,7 +73,8 @@ const RAF_YELLOW = 0xc9a23a; // the Day Fighter Scheme's outer-wing leading-edge
 // reach, so wing loading is a real, comparable quantity between these five.
 // maxSpeed and powerplant.thrust then pin down the drag polar (planeAero
 // below), which is why every one of these numbers has to stay honest — change
-// one and the aircraft's whole envelope moves with it.
+// one and the aircraft's whole envelope moves with it. Speeds and thrust below
+// are DESIGN scale: see PLANE_SPEED_SCALE, which takes them to world scale at load.
 //
 // The block under "shape" is the aeroplane's SILHOUETTE, and it is the same
 // kind of thing the tanks' hull/turret/chassis blocks are: measured metres, in
@@ -892,12 +893,22 @@ export const PLANE_SPECS = {
       ],
       // inlet BEHIND the wing trailing edge, exit under the fin leading edge,
       // with a boundary-layer splitter gap at the front lip
+      // Authored by its LOWER line only: the builder (embedUnderFuselage)
+      // stretches every section up into the body, so the scoop is one piece
+      // with the fuselage instead of the pod that used to float under it with
+      // daylight between (0.08 m at the radiator, 0.26 m at the exit), and it
+      // is now narrower than the body all the way aft, as on the real one.
+      // Deepest under the radiator, then a straight rising line to the exit
+      // flap, fairing out into the belly ahead of the tailwheel.
       bellyScoop: {
         sections: [
-          [-0.65, 0.40, 0.13, -0.60], [-1.50, 0.42, 0.28, -0.72],
-          [-2.50, 0.40, 0.26, -0.70], [-3.30, 0.30, 0.14, -0.60],
+          [-0.48, 0.27, 0.10, -0.80, 2.6], [-0.70, 0.30, 0.10, -0.84, 2.6],
+          [-1.30, 0.31, 0.10, -0.86, 2.6], [-2.00, 0.28, 0.10, -0.80, 2.6],
+          [-2.70, 0.22, 0.10, -0.62, 2.6], [-3.15, 0.15, 0.06, -0.42, 2.6],
+          [-3.45, 0.08, 0.03, -0.22, 2.4],
         ],
-        exitDoor: { w: 0.56, h: 0.05, d: 0.34, z: -3.30, y: -0.66 },
+        mouth: { z: -0.48, w: 0.22, h: 0.17, y: -0.68 },
+        exitDoor: { w: 0.38, h: 0.04, d: 0.30, z: -3.00, y: -0.55 },
       },
       // Merlin Mustangs breathe from UNDER the nose, not over it
       chinScoop: { w: 0.44, h: 0.18, len: 1.10, y: -0.58, z: 3.30 },
@@ -1072,14 +1083,79 @@ export const PLANE_SPECS = {
 // Atmosphere and the derived drag polar
 // ---------------------------------------------------------------------------
 
-export const GRAV = 9.8;
+// ---------------------------------------------------------------------------
+// The world speed of aircraft
+// ---------------------------------------------------------------------------
+//
+// Play-test verdict at the old scale: "they fly like jets" (a P-51 crossed the
+// map at 88 m/s). PLANE_SPEED_SCALE halves that, and it does so as a similarity
+// rather than a thinner polar, because every handling number in this file and
+// in ai/planeAI.js was tuned in the time domain. A flight path at the new scale
+// is the old flight path with every distance multiplied by K, flown in the SAME
+// seconds. That needs every acceleration multiplied by K too:
+//   - velocities in the specs (below): x K;
+//   - thrust: x K, and the prop knee follows maxSpeed;
+//   - air density RHO0: / K, so q = 0.5 rho V^2 comes out x K, like thrust;
+//   - the gravity the FLIGHT MODEL feels (GRAV): x K.
+// What that leaves untouched, by construction: stall and top-speed RATIOS, the
+// polar (clMax, cd0, k), G on the meter and every G limit, angle of attack,
+// glide angle, climb ANGLE, turn RATE and roll rate, and the time any of it
+// takes. What it halves: every speed and rate of climb, turn radius, zoom
+// height, take-off and landing runs. The alternative, real gravity with
+// density x 4, keeps G but doubles the turn rate and quarters the radius: a
+// fighter would turn a 64 m circle in five seconds.
+//
+// GRAV is the flight model's, not the world's: bombs, shells and debris keep
+// their own 9.8 (combat/bombs.js), and that is correct, since they do not fly.
+// The display (DISPLAY_KMH_PER_MS) divides K back out so the dial still reads
+// handbook figures. Change K here and nothing else: everything derives from it.
+export const PLANE_SPEED_SCALE = 0.5;
+export const GRAV = 9.8 * PLANE_SPEED_SCALE;
+
+// The specs above are written at design scale, K = 1. They go to world scale
+// here, once; `design` keeps what was written, for anything that rates an
+// aeroplane against other aeroplanes rather than flying it (battleRating.js
+// and the garage's stat bars read fractions of a design-scale reference).
+for (const s of Object.values(PLANE_SPECS)) {
+  s.design = { maxSpeed: s.maxSpeed, minSpeed: s.minSpeed, stallSpeed: s.stallSpeed,
+    structuralSpeed: s.structuralSpeed, climbRate: s.climbRate, thrust: s.powerplant.thrust };
+  s.maxSpeed *= PLANE_SPEED_SCALE;
+  s.minSpeed *= PLANE_SPEED_SCALE;
+  s.stallSpeed *= PLANE_SPEED_SCALE;
+  s.structuralSpeed *= PLANE_SPEED_SCALE;
+  s.climbRate *= PLANE_SPEED_SCALE;
+  s.powerplant.thrust *= PLANE_SPEED_SCALE;
+}
+
+// Modules and crew multiply spec.maxSpeed (game/mods.js) and were written for
+// tanks' gearboxes as much as for aeroplanes: all of them together, which every
+// profile has since main.js's #maxall first-run grant, come to +60% (a Zero's
+// 403 km/h dial reading 647, a P-51's 572 reading 916). No field modification
+// did that to a piston fighter, and it is half of why they "fly like jets".
+// A flying spec keeps at most this much over the type's own top speed, with
+// the critical speed following so it does not cruise in its compressibility
+// band (the rule in mods.js). Only per-spawn clones ever exceed it.
+const TUNED_SPEED_CAP = 1.12;
+export function capTunedSpeed(spec) {
+  const d = spec && spec.design;
+  if (!d) return spec;
+  const cap = d.maxSpeed * PLANE_SPEED_SCALE * TUNED_SPEED_CAP;
+  if (spec.maxSpeed > cap) {
+    const k = cap / spec.maxSpeed;
+    spec.maxSpeed = cap;
+    if (spec.structuralSpeed) spec.structuralSpeed *= k;
+  }
+  return spec;
+}
 
 // Air density in game units. The world is compressed — a "fast" fighter here
 // does 88 m/s, about a third of the real thing — so the density that turns
 // airspeed into force has to be scaled up to match, or nothing would fly. 4.0
 // is the number that makes the existing minSpeed figures come out as real stall
 // speeds for the real masses and wing areas, which is a good sign it is right.
-export const RHO0 = 4.0;
+// That 4.0 is the design-scale figure; see PLANE_SPEED_SCALE for the / K.
+const RHO_DESIGN = 4.0;
+export const RHO0 = RHO_DESIGN / PLANE_SPEED_SCALE;
 
 // The playable ceiling is 1 km, so altitude is stretched by ALT_SCALE to give
 // the model a believable band to work in: the deck is thick air, 500 m behaves
@@ -1117,16 +1193,19 @@ export const RHO_REAL = 1.225;
 // The same factor carries every type's real stall speed onto its game stall
 // speed to within about fifteen per cent (P-51D 102 mph -> 25 m/s against the
 // game's 28; Spitfire V 73 mph -> 18 against 21), which is the check that it is
-// the right factor rather than merely a convenient one.
-export const IAS_REAL_TO_GAME = Math.sqrt(RHO_REAL / RHO0);
+// the right factor rather than merely a convenient one. (Those game figures are
+// design scale: equal q holds there, and PLANE_SPEED_SCALE carries the result
+// on to the world, as it does every other speed.)
+export const IAS_REAL_TO_GAME = Math.sqrt(RHO_REAL / RHO_DESIGN) * PLANE_SPEED_SCALE;
 
 // ---------------------------------------------------------------------------
 // What the pilot reads
 // ---------------------------------------------------------------------------
 //
-// Physics speeds are this world's compressed m/s (~0.553 of the real thing),
-// and "m/s x 3.6" on the dial put a Zero cruising at 184 km/h and a Mustang
-// flat out at 317. Every airspeed
+// Physics speeds are this world's compressed m/s (~0.277 of the real thing;
+// the figures in this comment that say "game m/s" are design scale, K = 1, and
+// the arithmetic reads the same in world m/s with the factor below), and
+// "m/s x 3.6" on the dial would put a Mustang flat out at 158. Every airspeed
 // a player READS — the IAS tape, its stall mark, the gear limit printed beside
 // the gear lamps, "Too fast for the gear — it comes down below N km/h", the
 // overspeed warning, the hangar's top-speed figure — goes through this one
@@ -1135,8 +1214,8 @@ export const IAS_REAL_TO_GAME = Math.sqrt(RHO_REAL / RHO0);
 //
 // The scale is the world's own compression, undone: a real indicated speed
 // comes into this world as V_real * IAS_REAL_TO_GAME (equal dynamic pressure,
-// above), so the dial reads game m/s * 3.6 / IAS_REAL_TO_GAME = 6.51 km/h per
-// game m/s. It is the one linear scale on which the numbers that decide how an
+// above), so the dial reads world m/s * 3.6 / IAS_REAL_TO_GAME = 13.02 km/h per
+// world m/s (6.51 per design m/s). It is the one linear scale on which the numbers that decide how an
 // aeroplane is FLOWN all read as the handbook prints them:
 //   - gear limits: Zero 260, Spitfire 257, Fw 190 300, Il-2 280 (the P-51's
 //     274 reads 291, its stall-ratio floor in gearLimits() below);
@@ -1194,7 +1273,7 @@ export function gearLimits(spec) {
   if (out) return out;
   const src = spec && spec.gearLimit;
   const conv = (kmh) => (kmh / 3.6) * IAS_REAL_TO_GAME;
-  const floor = ((spec && spec.stallSpeed) || 25) * GEAR_LIMIT_STALL;
+  const floor = ((spec && spec.stallSpeed) || 25 * PLANE_SPEED_SCALE) * GEAR_LIMIT_STALL;
   const vlo = src && src.vlo > 0 ? Math.max(floor, conv(src.vlo)) : floor;
   const vle = src && src.vle > 0 ? Math.max(floor, conv(src.vle)) : vlo;
   out = { vlo, vle, vloKmh: src ? src.vlo : null, vleKmh: src ? src.vle : null };
@@ -1217,8 +1296,8 @@ export function gearLimits(spec) {
 // keeps whatever flapRip it states.
 const FLAP_STAGE_RATIO = [1.69, 1.34, 1];
 export function flapRipOf(spec) {
-  if (!(spec && spec.flapLimit > 0)) return spec && spec.flapRip ? spec.flapRip : [70, 55, 42];
-  const land = Math.max(gameSpeedFromDisplayKmh(spec.flapLimit), (spec.stallSpeed || 25) * GEAR_LIMIT_STALL);
+  if (!(spec && spec.flapLimit > 0)) return spec && spec.flapRip ? spec.flapRip : [70, 55, 42].map((v) => v * PLANE_SPEED_SCALE);
+  const land = Math.max(gameSpeedFromDisplayKmh(spec.flapLimit), (spec.stallSpeed || 25 * PLANE_SPEED_SCALE) * GEAR_LIMIT_STALL);
   return FLAP_STAGE_RATIO.map((k) => Math.round(land * k * 10) / 10);
 }
 for (const s of Object.values(PLANE_SPECS)) s.flapRip = flapRipOf(s);
@@ -1560,8 +1639,11 @@ function skinRings(rings, capStart = true, capEnd = true) {
 // bronekorpus actually is; n = 2.3-2.6 gives the flat-ish top decking and
 // rounded-corner sides of a Merlin fuselage. A section may set its own, so one
 // body can be boxy at the firewall and oval at the tail post.
+// An optional sixth number is the section's X centre (0 = on the centreline),
+// which lets a fairing follow the body it grows out of instead of running
+// dead straight (the wing-root fillets, rootFilletSections below).
 function loftZ(sections, sides = 8) {
-  const rings = sections.map(([z, hw, hh, y = 0, n = 2]) => {
+  const rings = sections.map(([z, hw, hh, y = 0, n = 2, x = 0]) => {
     const pts = [];
     const p = 2 / n;
     for (let i = 0; i < sides; i++) {
@@ -1570,7 +1652,7 @@ function loftZ(sections, sides = 8) {
       const c = Math.cos(a);
       const sx = n === 2 ? s : Math.sign(s) * Math.abs(s) ** p;
       const cy = n === 2 ? c : Math.sign(c) * Math.abs(c) ** p;
-      pts.push([sx * hw, y + cy * hh, z]);
+      pts.push([x + sx * hw, y + cy * hh, z]);
     }
     return pts;
   });
@@ -1953,6 +2035,115 @@ function fuselageSections(spec) {
     [-f * 0.72, 0.18, 0.25, 0.05],
     [-f, 0.07, 0.13, 0.07],
   ];
+}
+
+// The fuselage loft's cross-section at station z, interpolated exactly the way
+// loftZ skins between rings: { hw, hh, yc, n }, or null off either end.
+function fuselageProfileAt(spec, z) {
+  const s = fuselageSections(spec);
+  for (let i = 0; i < s.length - 1; i++) {
+    const a = s[i];
+    const b = s[i + 1];
+    if (z <= a[0] && z >= b[0]) {
+      const t = (a[0] - z) / Math.max(1e-6, a[0] - b[0]);
+      return {
+        hw: lerp(a[1], b[1], t),
+        hh: lerp(a[2], b[2], t),
+        yc: lerp(a[3] || 0, b[3] || 0, t),
+        n: lerp(a[4] || 2, b[4] || 2, t),
+      };
+    }
+  }
+  return null;
+}
+
+// Half-width of that cross-section at height y (0 above or below it).
+function profileHalfWidthAtY(f, y) {
+  const d = Math.abs((y - f.yc) / Math.max(1e-6, f.hh));
+  if (d >= 1) return 0;
+  return f.hw * Math.pow(1 - Math.pow(d, f.n), 1 / f.n);
+}
+
+// Anything that hangs UNDER the fuselage (a radiator bath, a carb intake) is
+// authored by its own lower line, and its top has to be buried in the body or
+// it renders as a separate pod floating under the aeroplane with daylight
+// between — which is exactly what the P-51's scoop did from the wing trailing
+// edge aft (a 0.26 m gap at the exit door). Each section keeps its bottom and
+// is stretched up until its top sits `embed` inside the fuselage loft.
+function embedUnderFuselage(spec, sections, embed = 0.08) {
+  return sections.map((sec) => {
+    const [z, hw, hh, yc = 0, n = 2, x = 0] = sec;
+    const f = fuselageProfileAt(spec, z);
+    if (!f) return sec;
+    const bottom = yc - hh;
+    const want = f.yc - f.hh + embed;
+    if (yc + hh >= want || want <= bottom + 0.02) return sec;
+    return [z, hw, (want - bottom) / 2, (want + bottom) / 2, n, x];
+  });
+}
+
+// Height of the wing's lower skin at spanwise distance x from the centreline.
+// The slab rises outboard twice over: dihedral lifts it and the taper thins it.
+function wingLowerSkinY(wing, x) {
+  const ax = Math.abs(x);
+  const u = Math.min(1, ax / Math.max(1e-6, wing.spanHalf));
+  const t = Math.max(0.012, planformAt(wing, u).chord * lerp(wing.tcRoot, wing.tcTip, u) * 0.5);
+  if (wing.dihBreak > 0) return wing.y + dihedralY(wing, u) - t;
+  return wing.y + ax * Math.tan(wing.dih) - t / Math.cos(wing.dih);
+}
+
+// Wing-root fillets that FOLLOW the fuselage. They used to be two straight
+// lofts at a fixed x = +-0.38, whatever the body did: forward they were buried,
+// but aft of the trailing edge the fuselage narrows to a quarter of a metre and
+// the fillet's tail stood out of the side as a loose strake, and behind the
+// wing it hung below the belly — the "crooked" wing-root underside on all seven
+// types. Now each station sits on the body's own half-width at its height,
+// grows a stated distance out over the wing, and never drops below the belly.
+//
+// A fillet fairs the TOP of the joint. Its underside has to stay inside the
+// wing slab: the slab's lower skin rises outboard, so a fillet floored at the
+// root thickness came through it as a dark diamond beside the belly. The floor
+// is therefore the lower skin at the fillet's OUTER edge (the skin is lowest
+// inboard, so that clears the whole width), and the nose starts on the leading
+// edge at that same outer edge rather than ahead of it.
+function rootFilletSections(spec, lay, wing, sign) {
+  const c = wing.rootChord;
+  const half = (c * wing.tcRoot) / 2; // wing root half-thickness
+  const reachOf = [0.08, 0.26, 0.22, 0.13, 0.05];
+  const edge = (u, side) => {
+    const p = planformAt(wing, u);
+    return lay.wingZ + p.sweep + side * p.chord * 0.5;
+  };
+  const uAt = (i) => {
+    // the body is at most this wide along the wing root
+    const f = fuselageProfileAt(spec, lay.wingZ) || { hw: 0.3 };
+    return Math.min(1, (f.hw + reachOf[i]) / wing.spanHalf);
+  };
+  const st = [
+    // [z, wing thickness share, rise above the wing, reach out from the body]
+    [edge(uAt(0), 1), 0.3, 0.05, reachOf[0]],
+    [lay.wingZ + c * 0.16, 1.0, 0.16, reachOf[1]],
+    [lay.wingZ - c * 0.34, 0.75, 0.13, reachOf[2]],
+    [edge(uAt(3), -1), 0.4, 0.09, reachOf[3]],
+    [lay.wingZ - c * wing.filletAft, 0.05, 0.05, reachOf[4]],
+  ];
+  return st.map(([z, th, rise, reach]) => {
+    const f = fuselageProfileAt(spec, z) || { hw: 0.3, hh: 0.3, yc: 0, n: 2 };
+    const top = lay.wingY + half * th + rise;
+    let bottom = Math.max(lay.wingY - half * th - 0.01, f.yc - f.hh + 0.04);
+    // ...and stays where the body is still wide: aft of the trailing edge a
+    // fuselage narrows and lifts, and a taper left at wing height would poke
+    // out of its underside as a loose blade
+    const y0 = Math.max((top + bottom) / 2, f.yc - 0.6 * f.hh);
+    const outer = Math.max(0.04, profileHalfWidthAtY(f, y0)) + reach;
+    bottom = Math.max(bottom, wingLowerSkinY(wing, outer) + 0.015);
+    const hh = Math.max(0.03, (top - bottom) / 2);
+    const y = Math.max((top + bottom) / 2, f.yc - 0.6 * f.hh);
+    const bodyX = Math.max(0.04, profileHalfWidthAtY(f, y));
+    const inset = Math.min(0.12, bodyX * 0.7);
+    const hw = reach + inset;
+    return [z, hw, hh, y, 2, sign * (bodyX - inset)];
+  });
 }
 
 // Canopy sections, and the interior that has to exist behind them now that the
@@ -2405,14 +2596,8 @@ function buildPlaneGeometry(spec) {
   // wing meets the body; without it the wing looks stuck on with glue. The
   // Spitfire's runs well past the trailing edge, which is why filletAft is a
   // spec number rather than one shared constant.
-  const rootChord = wing.rootChord;
   for (const sign of [1, -1]) {
-    add(bins.body, loftZ([
-      [lay.wingZ + rootChord * 0.5, 0.16, 0.09, lay.wingY + 0.1],
-      [lay.wingZ + rootChord * 0.16, 0.34, 0.26, lay.wingY + 0.06],
-      [lay.wingZ - rootChord * 0.34, 0.32, 0.24, lay.wingY + 0.04],
-      [lay.wingZ - rootChord * wing.filletAft, 0.12, 0.07, lay.wingY + 0.02],
-    ], 6).translate(sign * 0.38, 0, 0));
+    add(bins.body, loftZ(rootFilletSections(spec, lay, wing, sign), 8));
   }
 
   // ---- engine installation ----
@@ -2780,8 +2965,17 @@ function buildPlaneGeometry(spec) {
   // 0.76 m AHEAD of the wing and run over half the aircraft, which reads as a
   // Typhoon chin bath rather than the Mustang's compact deep scoop set well aft.
   if (shape.bellyScoop) {
-    add(bins.body, loftZ(shape.bellyScoop.sections, 10));
-    const d = shape.bellyScoop.exitDoor;
+    const bs = shape.bellyScoop;
+    add(bins.body, loftZ(embedUnderFuselage(spec, bs.sections, 0.1), 12));
+    // the dark inlet mouth on the scoop's front face (the loft is capped)
+    if (bs.mouth) {
+      const m = bs.mouth;
+      add(bins.bodyMatt, loftZ([
+        [m.z + 0.012, m.w, m.h, m.y, 2.4],
+        [m.z - 0.03, m.w, m.h, m.y, 2.4],
+      ], 12), AF_CLASS.INTERIOR);
+    }
+    const d = bs.exitDoor;
     if (d) add(bins.bodySteel, boxAt(d.w, d.h, d.d, 0, d.y, d.z), AF_CLASS.UNDER);
   } else if (look.bellyScoop) {
     add(bins.body, loftZ([
@@ -2796,11 +2990,11 @@ function buildPlaneGeometry(spec) {
   // the Allison-engined P-51A, a different aeroplane.
   if (shape.chinScoop) {
     const c = shape.chinScoop;
-    add(bins.body, loftZ([
+    add(bins.body, loftZ(embedUnderFuselage(spec, [
       [c.z + c.len * 0.5, c.w * 0.44, c.h * 0.4, c.y + 0.03],
       [c.z + c.len * 0.2, c.w * 0.5, c.h * 0.5, c.y],
       [c.z - c.len * 0.5, c.w * 0.4, c.h * 0.4, c.y + 0.04],
-    ], 8));
+    ], 0.06), 8));
   }
 
   // Ducts, stated per side. This is what replaces the chin radiator the
@@ -3549,7 +3743,7 @@ function propDiscFor(spec, lay) {
   const f = spec.finish || {};
   const p = lay.prop;
   const R = lay.propR;
-  const advance = displaySpeedKmh(spec.maxSpeed || 100) / 3.6 / PROP_PHOTO_RPS;
+  const advance = displaySpeedKmh(spec.maxSpeed || 100 * PLANE_SPEED_SCALE) / 3.6 / PROP_PHOTO_RPS;
   return propDiscMaterial({
     key: spec.id,
     blades: lay.blades,

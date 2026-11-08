@@ -32,7 +32,7 @@ export const ACTIONS = [
   { code: 'Digit1', tank: 'AP shell' },
   { code: 'Digit2', tank: 'HE shell' },
   { code: 'Digit3', tank: 'Special shell' },
-  { code: 'KeyR', tank: 'Repair (hold)', air: 'WEP on / off' },
+  { code: 'KeyR', tank: 'Repair on / off (hold 2 s)', air: 'WEP on / off' },
   { code: 'KeyF', tank: 'Fire extinguisher', air: 'Fire rocket' },
   { code: 'KeyG', tank: 'Smoke grenade', air: 'Landing gear' },
   { code: 'KeyH', tank: 'First aid' },
@@ -528,4 +528,11 @@ export function relabelHelp(html) {
   if (typeof html !== 'string' || !input.isRebound()) return html;
   return html.replace(/(<span>)([^<]*)(<\/span>)/g, (all, a, body, c) =>
     a + body.split(' · ').map(relabelSegment).join(' · ') + c);
+}
+
+// Wave 8: the short name of the key a LOGICAL action is on now ('KeyR' ->
+// 'R', or whatever the player rebound it to), for prompts such as the repair
+// ring's "HOLD R". Touch players see the same label on their button's prompt.
+export function actionKeyLabel(logical) {
+  return keyLabel(input.bindingOf(logical));
 }

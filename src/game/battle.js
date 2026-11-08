@@ -23,9 +23,10 @@ import { ShellManager, intersectTanks, clipRayToScenery, barrelIntoWall } from '
 import { BulletManager } from '../combat/bullets.js';
 import { Effects } from '../combat/effects.js';
 import { CameraShake } from '../combat/shake.js';
+import { ViewSpring, smoothMax } from './planeCamera.js';
 import { heFillerKg, BLAST_KG } from '../combat/blast.js';
 import { TankAI, hasLOS, notifyObjectivesChanged } from '../ai/tankAI.js';
-import { input } from '../core/input.js';
+import { input, actionKeyLabel } from '../core/input.js';
 import {
   sfx, sfx3d, updateEngineSound, updateEngine, removeEngine,
   setListener, radioCue, updateAudio, resetAudio, setVolumes,
@@ -37,6 +38,8 @@ import { XrayView } from '../ui/xray.js';
 import { opticSteps } from '../ui/hud.js';
 import { clamp, lerp, rand, wrapAngle } from '../core/utils.js';
 import { stationsFor } from '../vehicles/interior/index.js';
+import { gunSightOrigin } from '../vehicles/interior/sight.js';
+import { isRealisticRules, isSimulator, SIM_HUD } from './simRules.js';
 
 const TICKETS_MAX = 2100;
 const KILL_COST = 70;
@@ -149,6 +152,8 @@ function canFireStream(tank) {
 
 const tmpV = new THREE.Vector3();
 const tmpV2 = new THREE.Vector3();
+// wave 8: the repair key's current name, for the hold-to-repair prompts
+const repairKeyName = () => actionKeyLabel('KeyR');
 const tmpV3 = new THREE.Vector3();
 // Spotting runs inside the per-frame loops that already own tmpV*, so it keeps
 // its own pair rather than trusting the call order not to change.
@@ -297,7 +302,10 @@ export class Battle {
     this.earnedRp = 0;
     this.burnEmit = 0;
     // realistic difficulty: friendly fire on, no free markers, spotting matters
-    this.realistic = progress.getDifficulty() === 'realistic';
+    // simulator (game/simRules.js) is realistic plus first person only, a
+    // crew's HUD and bots that see as buttoned-up crews (tankAI BotVision)
+    this.realistic = isRealisticRules(progress.getDifficulty());
+    this.simulator = isSimulator(progress.getDifficulty());
     this.spectate = false;
     this.stats = new Map(); // scoreboard: name -> { kills, deaths, ... }
     this.bailTimer = 0;
@@ -377,6 +385,7 @@ export class Battle {
     hud.setAirPanel?.(null);
     hud.setBlackout?.(0);
     hud.setMatchInfo?.({ mode: this.modeLabel, timeLeft: this.matchTime });
+    hud.setSimulator?.(this.simulator);
     this.refreshHelp();
     this.afterSpawns();
   }
@@ -409,9 +418,11 @@ export class Battle {
     this.hud.setHelp(`
       <span>W / S — throttle · A / D — steer · Mouse — aim · LMB — fire</span>
       <span>Space — machine gun · Shift — sniper view · Scroll — zoom</span>
-      <span>1 / 2 / 3 — shell types · R (hold) — repair · F — extinguisher</span>
+      <span>1 / 2 / 3 — shell types · R (hold) — repair on / off (2 s) · F — extinguisher</span>
       <span>G — smoke grenade · H — first aid · V — scout${arty}</span>
-      <span>C — crew stations · X — third person · Scroll — hatch (in a station)</span>
+      <span>${this.simulator
+    ? 'SIMULATOR: first person only · C — crew stations · Shift — gunner sight · RMB — commander: lay the gun on your view'
+    : 'C — crew stations · X — third person'} · Scroll — hatch (in a station)</span>
       <span>E — gunner: sight / look-around (in the gunner's station)</span>
       <span>M — tactical map · Tab — scoreboard · J (hold) — abandon · Esc — pause</span>
     `);
@@ -905,6 +916,11 @@ export class Battle {
     if (!crew.ownsMouse) {
       this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
       this.camPitch = clamp(this.camPitch - input.mouseDY * sens, minPitch, maxPitch);
+    } else if (crew.laying) {
+      // simulator: the commander's aiming command; the gun goes there at its
+      // real traverse rate (TankStations._layCommand)
+      this.camYaw = crew.layYaw;
+      this.camPitch = clamp(crew.layPitch, minPitch, maxPitch);
     }
     if (input.wheel !== 0 && !crew.ownsMouse) {
       if (this.sniper) {
@@ -1005,6 +1021,29 @@ export class Battle {
     else this.hud.hitMessage(text, severity === 'critical' ? 'bad' : 'good');
   }
 
+  // Wave 8: the repair key as a 2 s hold toggle. Messages for each edge and for
+  // a session that ended by itself; the ring on the HUD while the key is held.
+  updateRepairToggle(p, dt, held) {
+    const ev = p.updateRepairKey(dt, held);
+    if (ev === 'started') {
+      this.repairMsgFor = p.repairTarget;
+      this.notify(`Repairing ${this.moduleLabel(p.repairTarget)}… (hold ${repairKeyName()} to cancel)`, 'info');
+    } else if (ev === 'cancelled') {
+      this.notify('Repair cancelled', 'info');
+    } else if (ev === 'nothing') {
+      this.notify('Nothing to repair', 'info');
+    } else if (ev === 'moving') {
+      this.notify('Stop the vehicle to work on it', 'warn');
+    }
+    const end = p.repairSessionEnd;
+    if (end) {
+      p.repairSessionEnd = null;
+      if (end === 'moving') this.notify('Repair stopped — the vehicle moved', 'warn');
+      else if (end === 'done') this.notify('Repairs complete', 'good');
+    }
+    this.hud.setRepairHold?.(p.repairHoldFrac, p.repairHoldMode, repairKeyName());
+  }
+
   // ---------------- consumables, scouting, artillery ----------------
   updateConsumables(dt) {
     const p = this.player;
@@ -1013,7 +1052,13 @@ export class Battle {
     // The entity cancels the repair every frame the vehicle is rolling, so the
     // restart below must not announce itself again each time it does.
     const repairHeld = input.down('KeyR');
-    if (repairHeld) {
+    // wave 8: hold the repair key 2 s to start a session that runs by itself,
+    // 2 s again to call it off (the entity's state machine; the HUD ring
+    // shows the hold). The old hold-to-work block below is the fallback for
+    // an entity without it.
+    if (typeof p.updateRepairKey === 'function') {
+      this.updateRepairToggle(p, dt, repairHeld);
+    } else if (repairHeld) {
       if (!p.repairing) {
         if (p.startRepair?.()) {
           if (p.repairTarget !== this.repairMsgFor) {
@@ -1538,8 +1583,12 @@ export class Battle {
       const zone = this.zoneAt(t.position);
       if (!zone || zone.owner !== t.team) {
         t.resupplyT = 0;
+        t.atSupport = false;
         continue;
       }
+      // wave 8: on a held point repairs run faster on the point's spares and
+      // knocked-out crew are replaced (tankEntity SUPPORT_*)
+      t.atSupport = true;
       t.resupplyT = (t.resupplyT || 0) + dt;
       if (t.resupplyT < 3) continue;
       t.resupplyT -= 3;
@@ -1841,7 +1890,11 @@ export class Battle {
     const wantFire = isAA ? input.fireHeld : input.down('Space');
     if (!wantFire) return;
     let fired = 0;
-    while (p.streamTimer <= 0 && p.streamAmmo > 0) {
+    // wave 8: coax from its own port beside the gun, hull MG from its ball
+    if (!isAA && typeof p.fireMachineGuns === 'function') {
+      fired = this.fireTankMgs(p, p.aimPoint);
+    }
+    while (isAA && p.streamTimer <= 0 && p.streamAmmo > 0) {
       p.streamTimer += 1 / wpn.rof;
       p.streamAmmo--;
       fired++;
@@ -1862,6 +1915,51 @@ export class Battle {
         this.streamShake = 0;
         this.shake.add(0.05, 0.16);
       }
+    }
+  }
+
+  // Wave 8: one trigger frame of a tank's machine guns (player or AI): the
+  // entity fires the coax from its port and the hull MG from its ball (if the
+  // point is in its arc), this draws the flash at each port and plays the
+  // sound there. Returns rounds fired.
+  fireTankMgs(t, aimPoint) {
+    const s = t.fireMachineGuns(this.bullets, aimPoint);
+    if (s.coax) {
+      this.effects.mgFlash?.(s.coaxPos, s.coaxDir);
+      sfx3d.mg(s.coaxPos);
+    }
+    if (s.hull) {
+      this.effects.mgFlash?.(s.hullPos, s.hullDir);
+      sfx3d.mg(s.hullPos);
+    }
+    return s.coax + s.hull;
+  }
+
+  // ai/tankAI.js hands its stream fire to this hook when the battle has one:
+  // called each frame of an AI burst with the point it is laid on. The SPAA
+  // quad keeps the AI's own path (returning false is not read; the AI only
+  // calls this, so the quad is fired here from the main muzzle as before).
+  requestStream(t, aimPoint) {
+    if (!t || !t.alive) return;
+    if (!t.spec.aa && typeof t.fireMachineGuns === 'function') {
+      this.fireTankMgs(t, aimPoint);
+      return;
+    }
+    const wpn = t.spec.aa || t.spec.mg;
+    if (!wpn) return;
+    let fired = 0;
+    while (t.streamTimer <= 0 && t.streamAmmo > 0 && fired < 8) {
+      t.streamTimer += 1 / wpn.rof;
+      t.streamAmmo--;
+      const pos = t.muzzleWorld(tmpV);
+      const dir = t.gunDirection(tmpV2);
+      this.bullets.fire(pos, dir, wpn.speed, wpn.dmg, t, wpn.spread);
+      fired++;
+    }
+    if (fired) {
+      const pos = t.muzzleWorld(tmpV);
+      this.effects.mgFlash?.(pos, t.gunDirection(tmpV2));
+      sfx3d.mg(pos);
     }
   }
 
@@ -2265,6 +2363,10 @@ export class Battle {
       case 'revived':
         this.notify(`${roleLabel(ev.role)} back in his seat`, 'good');
         break;
+      case 'replenished':
+        // wave 8: a held capture point sent a replacement
+        this.notify(`New ${roleLabel(ev.role).toLowerCase()} joined the crew`, 'good');
+        break;
       default:
         break;
     }
@@ -2440,10 +2542,19 @@ export class Battle {
       return;
     }
     const p = this.player;
+    // wave 8: the view chases the raw aim on a stiff spring, so an uneven
+    // mouse count is not a twitch of the whole picture (planeCamera.js)
+    const vs = this.viewSpring || (this.viewSpring = new ViewSpring());
+    if (vs.owner !== p) {
+      vs.owner = p; // a new vehicle is a cut
+      vs.reset(this.camYaw, this.camPitch);
+    }
+    // (through a sight the reticle must stay on the fire ray in a sweep: no trail)
+    vs.update(dt, this.camYaw, this.camPitch, this.sniper ? 1 : 0.5);
     const dir = tmpV.set(
-      Math.sin(this.camYaw) * Math.cos(this.camPitch),
-      Math.sin(this.camPitch),
-      Math.cos(this.camYaw) * Math.cos(this.camPitch),
+      Math.sin(vs.yaw) * Math.cos(vs.pitch),
+      Math.sin(vs.pitch),
+      Math.cos(vs.yaw) * Math.cos(vs.pitch),
     );
 
     let targetFov = 60;
@@ -2479,13 +2590,14 @@ export class Battle {
       const steps = opticSteps(p.spec);
       this.sniperStep = clamp(this.sniperStep || 0, 0, steps.length - 1);
       targetFov = this.sniperFov = steps[this.sniperStep].fov;
-      const eye = p.turretWorldPos(tmpV2).add(tmpV3.set(0, 0.9, 0));
-      this.camera.position.copy(eye).addScaledVector(dir, 1.2);
+      // the sight's real objective, beside the gun (vehicles/interior/sight.js)
+      const eye = gunSightOrigin(p, tmpV2);
+      this.camera.position.copy(eye);
       this.camera.lookAt(eye.addScaledVector(dir, 100));
     } else {
       const anchor = tmpV2.set(p.position.x, p.position.y + 3.2, p.position.z);
       const pos = tmpV3.copy(anchor).addScaledVector(dir, -this.camDist);
-      pos.y = Math.max(pos.y, terrainHeight(pos.x, pos.z) + 1.4);
+      pos.y = smoothMax(pos.y, terrainHeight(pos.x, pos.z) + 1.4, 1.2);
       this.camera.position.copy(pos);
       this.camera.lookAt(anchor.addScaledVector(dir, 40));
     }
@@ -2557,7 +2669,8 @@ export class Battle {
     for (const t of this.tanks) {
       if (!t.alive) continue;
       if (t.team === 0) list.push(t);
-      else if (this.isSpotted(t) && !this.smokeHidden(t)) list.push(t);
+      // simulator: own side and the objectives only
+      else if (!this.simulator && this.isSpotted(t) && !this.smokeHidden(t)) list.push(t);
     }
     return list;
   }
@@ -2639,7 +2752,9 @@ export class Battle {
 
     // gun-convergence marker: where the barrel actually points
     // (also shown in sniper view — the turret lags behind the mouse)
-    if (p.alive) {
+    // (simulator: only in the gunner's sight — nobody else on the crew sees
+    // where the barrel will put the round)
+    if (p.alive && (!this.simulator || this.sniper)) {
       const muzzle = p.muzzleWorld(tmpV);
       const gdir = p.gunDirection(tmpV2);
       let dist = Math.max(20, muzzle.distanceTo(p.aimPoint));
@@ -2677,7 +2792,8 @@ export class Battle {
       const sv = this._scopeView || (this._scopeView = { fov: 60, step: null });
       sv.fov = this.fov;
       sv.step = opticSteps(p.spec)[this.sniperStep || 0] || null;
-      hud.updateScope(marks, Math.round(this.aimDist || 0), (60 / this.fov).toFixed(1), sv);
+      // (simulator: no range readout — the crew judge it on the sight's stadia)
+      hud.updateScope(marks, this.simulator ? 0 : Math.round(this.aimDist || 0), (60 / this.fov).toFixed(1), sv);
       hud.setScopeVisible(true);
     } else {
       hud.setScopeVisible(false);
@@ -2890,6 +3006,8 @@ export class Battle {
       let visible = dist < 900;
       let scouted = false;
       let stale = false;
+      // simulator: no enemy marks at all, and a friend only tagged close in
+      if (this.simulator) visible = friendly && dist < SIM_HUD.allyMarkerRange;
       if (visible && !friendly) {
         if (this.realistic) {
           // realistic: only what the team has actually seen carries a marker,

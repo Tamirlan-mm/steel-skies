@@ -23,13 +23,15 @@ import { GeoBuilder, layerMesh, lin, ORDER_GLASS } from './common.js';
 //     gunner     on the Flakvierling's own seat, centre rear of the mount,
 //                eye on the reflector sight above the cradle; two foot
 //                pedals fire the diagonal gun pairs, two handwheels lay it.
-//     commander  rear right, seated on a fold-down seat with his head over
-//                the rim (the tub is open: there is no cupola, no vision
-//                block — he simply looks out, and stands to see higher).
-//     loader     right of the mount, crouched at the guns, changing the
+//     the gunner is also the commander: five men are the commander/gunner, two
+//                loaders, driver and radio operator (en.wikipedia.org/wiki/Wirbelwind).
+//     loaders    right and left of the mount, at the guns, changing the
 //                20-round box magazines that feed each FlaK 38 from the side.
-//                (Several accounts give the vehicle a second loader on the
-//                left; the five-man spec here has one.)
+//                The tub is open: no cupola, no vision block, they look out
+//                over the rim and stand to see higher. The second loader keeps
+//                the 'commander' key, because the damage model
+//                (combat/internals.js CREW_ORDER) has a commander's box and no
+//                second loader's: the box stands for him (as on the Stuart).
 //   Ammunition: 3,200 rounds in 20-round magazines — ready magazines in
 //   racks round the lower tub wall, the rest in bins down both sponsons and
 //   in floor bins under the tub (the damage model's ammo boxes).
@@ -64,20 +66,22 @@ export default defineTankInterior('wirbelwind', (spec, base) => {
   const plateZ = spec.hull.len / 2 - 0.42; // 2.54
   const drv = [0.66, 1.42, plateZ - 0.24];
   const bow = [-0.58, 1.42, plateZ - 0.28];
-  const cmd = [-0.42, t.h + 0.13, -0.64];
+  const cmd = [0.6, t.h + 0.13, 0.12]; // the second loader (see the header)
   const ldr = [-0.6, t.h + 0.07, 0.12];
   return {
+    stationLabels: { commander: 'LOADER 2', gunner: 'COMMANDER / GUNNER' },
     stations: {
       commander: {
         frame: 'turret',
         eye: cmd,
         look: [0, 0.04],
         device: { type: 'none' },
+        loads: true,
+        magSide: 1,
         // the wheel stands him up: head and shoulders over the rim
         hatch: { eye: [cmd[0], t.h + 0.5, cmd[2]], fov: 75, limits: { yaw: null, pitch: [-0.9, 1.45] } },
         limits: { yaw: null, pitch: [-0.85, 1.35] },
         fov: 70,
-        seat: [cmd[0], 0.7, cmd[2] - 0.02],
       },
       gunner: {
         frame: 'turret',
@@ -87,6 +91,8 @@ export default defineTankInterior('wirbelwind', (spec, base) => {
         eye: [0, 0.27, -0.6],
         device: { type: 'sight', w: 0.02, h: 0.02, dist: 0.12 },
         seat: [0, 0.75, -0.62],
+        // his figure: at the reflector sight (`eye` is under the seat, above)
+        figEye: [0, t.h + 0.07, -0.52],
         // his look-around (wave 7): head up off the reflector sight, over
         // the guns in the open tub — the tub IS the vision device
         vision: {
@@ -320,7 +326,7 @@ function buildTub(layer) {
       mb.box(x + out * 0.255, y, 0.06, 0.012, 0.06, 0.03, dark);
       add(mg, mb, layer.mats.lit);
       ww.receivers.push(g);
-      ww.mags.push({ group: mg, out });
+      ww.mags.push({ group: mg, out, pos: [x + out * 0.16, y, 0.06] });
       gi++;
     }
   }
@@ -497,7 +503,10 @@ if (!P.__tubExtension) {
     update0.call(this, dt, view);
     const inTub = !!(view && view.station && view.station.frame === 'turret');
     ww.inTub = inTub;
-    for (const m of ww.hullMeshes) m.visible = !inTub;
+    // (a station's own housing stays off: wave 8, it stood in front of the bow
+    // gunner's sight, 56% of the screen)
+    const off = this._housingOff;
+    for (const m of ww.hullMeshes) m.visible = !inTub && !(off && off.has(m));
     if (inTub) lightTub(this, dt);
     else setSun(this, false);
     return undefined;

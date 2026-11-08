@@ -204,6 +204,10 @@ function poolSpecs(pool, kind) {
 // above your weight. Realistic keeps the brackets tighter; arcade is looser
 // because arcade is where the mixed-bag battles are supposed to happen.
 function tuning(difficulty) {
+  // Simulator (game/simRules.js) has its own queue: the tightest brackets of
+  // the three and the fewest uptiers, because a first-person crew against a
+  // full BR step up is no fun at all.
+  if (difficulty === 'simulator') return { spread: 0.5, uptierChance: 0.25, uptierMax: 0.7 };
   return difficulty === 'realistic'
     ? { spread: 0.6, uptierChance: 0.33, uptierMax: 0.7 }
     : { spread: 0.8, uptierChance: 0.28, uptierMax: 0.7 };

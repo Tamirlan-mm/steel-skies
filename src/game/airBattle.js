@@ -23,7 +23,7 @@ import {
 import { PlaneCamera } from './planeCamera.js';
 import { randomPreset } from '../world/presets.js';
 import { Plane } from '../vehicles/planeEntity.js';
-import { PLANE_SPECS, displaySpeedKmh } from '../vehicles/planes.js';
+import { PLANE_SPECS, displaySpeedKmh, PLANE_SPEED_SCALE } from '../vehicles/planes.js';
 import { AAGun, Truck } from '../vehicles/groundUnits.js';
 import { BulletManager } from '../combat/bullets.js';
 import { BombManager, blastDamageAt } from '../combat/bombs.js';
@@ -45,6 +45,7 @@ import {
 } from '../core/audio.js';
 import { applyMods } from './mods.js';
 import { progress, planBattle, REWARD } from './progress.js';
+import { isRealisticRules, isSimulator, flightModelOf, SIM_HUD, simAAPlanes } from './simRules.js';
 import { clamp, lerp, rand, wrapAngle, moveToward } from '../core/utils.js';
 
 const TICKETS_MAX = 1500;
@@ -365,7 +366,11 @@ export class AirBattle {
     // takes the mode, and every Plane built here — player and bot alike — has
     // to get it or the structural G limiter never leaves arcade.
     this.difficulty = progress.getDifficulty();
-    this.realistic = this.difficulty === 'realistic';
+    // simulator (game/simRules.js): realistic rules and flight model, the
+    // cockpit view only, a crew's HUD, bots with a pilot's eyes (planeAI)
+    this.realistic = isRealisticRules(this.difficulty);
+    this.simulator = isSimulator(this.difficulty);
+    if (this.simulator) this.cockpit = true;
     this.spectate = false;
     this.stats = new Map(); // scoreboard: name -> { kills, deaths, ... }
     this.bailTimer = 0;
@@ -464,6 +469,7 @@ export class AirBattle {
     hud.setReloadVisible(false);
     hud.setCrosshairVisible(false); // the yellow nose marker is the gunsight
     hud.setAmmoPanel(null); // a previous tank spawn's shell stack is not ours
+    hud.setSimulator?.(this.simulator);
     hud.setHelp(`
       <span>Mouse — steer · keys mix in on their axis</span>
       <span>A / D — roll · W / S — pitch (W down) · Q / E — rudder</span>
@@ -471,7 +477,7 @@ export class AirBattle {
       <span>[ / ] — radiator close / open (manual mode only)</span>
       <span>V — flaps · G — landing gear · B — airbrake / wheel brakes · X — extinguisher</span>
       <span>LMB — fire · Space — bomb · F — rocket</span>
-      <span>RMB hold — aim zoom · P — cockpit / chase view · M — map · Tab — scoreboard</span>
+      <span>RMB hold — aim zoom · ${this.simulator ? 'SIMULATOR: cockpit only · P or MMB (hold) + mouse — look around' : 'P — cockpit / chase view'} · M — map · Tab — scoreboard</span>
       <span>J (hold) — bail out · Esc — pause</span>
       <span>Landing: slow below the gear limit, G, landing flaps, gentle descent (under 2.4 m/s)</span>
       <span>On the ground: Q / E steer · B brakes · stop on your own field to repair and rearm</span>
@@ -535,7 +541,7 @@ export class AirBattle {
     const name = isPlayer
       ? `You (${spec.name})`
       : `${team === 0 ? 'Ally' : 'Enemy'} ${spec.name}-${slot + 1}`;
-    const plane = new Plane(this.scene, spec, team, name, isPlayer, this.difficulty);
+    const plane = new Plane(this.scene, spec, team, name, isPlayer, flightModelOf(this.difficulty));
     const x = (team === 0 ? -800 : 800) + rand(-30, 30);
     const z = -140 + slot * 90 + rand(-15, 15);
     const y = terrainHeight(x, z) + 260 + slot * 14;
@@ -767,7 +773,7 @@ export class AirBattle {
 
     for (const g of this.groundUnits) {
       if (g instanceof AAGun) {
-        g.update(dt, this.planes, this.bullets, (gun) => {
+        g.update(dt, this.simulator ? simAAPlanes(g, this.planes, dt) : this.planes, this.bullets, (gun) => {
           sfx3d.mg(gun.position);
           this.effects.mgFlash(
             tmpV.copy(gun.position).add(tmpV2.set(0, 1.8, 0)),
@@ -813,11 +819,19 @@ export class AirBattle {
   updatePlayerControls(dt) {
     const p = this.player;
     const sens = 0.0022 * (this.fov / 60);
-    if (input.mouseDX !== 0 || input.mouseDY !== 0) this.followDelay = 0.9;
+    // simulator: hold P (the VIEW button) or the middle button and the mouse
+    // turns the pilot's head; the instructor keeps flying the last aim
+    const headLook = this.simulator && p.alive && (input.down('KeyP') || input.down('Mouse1'));
+    if (!headLook && (input.mouseDX !== 0 || input.mouseDY !== 0)) this.followDelay = 0.9;
     // A-02: P swaps the chase view and the cockpit; in the cockpit the view
     // banks with the wings, so the mouse is read on the screen
-    if (input.pressed('KeyP')) this.cockpit = !this.cockpit;
-    if (this.cockpit && p.alive) {
+    // (simulator: the cockpit only — the chase view is gone)
+    if (this.simulator) this.cockpit = true;
+    else if (input.pressed('KeyP')) this.cockpit = !this.cockpit;
+    if (this.simulator) this.planeCam.headLook(dt, headLook, input.mouseDX, input.mouseDY, sens);
+    if (headLook) {
+      // (the mouse is the head this frame)
+    } else if (this.cockpit && p.alive) {
       this.planeCam.addMouseScreen(input.mouseDX, input.mouseDY, sens);
     } else {
       this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
@@ -1592,8 +1606,8 @@ export class AirBattle {
     const lookX = p.position.x + p.vel.x * 3;
     const lookZ = p.position.z + p.vel.z * 3;
     const lookY = p.position.y + p.vel.y * 3;
-    const landing = p.gearPos >= 1 && p.ias < p.gearLim.vle * 1.15 && p.vel.y > -6;
-    if (!landing && lookY - groundHeightAt(lookX, lookZ) < 60 && p.vel.y < -5) {
+    const landing = p.gearPos >= 1 && p.ias < p.gearLim.vle * 1.15 && p.vel.y > -6 * PLANE_SPEED_SCALE;
+    if (!landing && lookY - groundHeightAt(lookX, lookZ) < 60 && p.vel.y < -5 * PLANE_SPEED_SCALE) {
       if (this.warnGround <= 0) {
         this.warnGround = 2.5;
         this.hud.incomingMessage('PULL UP', 'critical');
@@ -1702,7 +1716,7 @@ export class AirBattle {
       losses: this.losses.slice(),
       survived: this.survived.slice(),
       usage: this.usage,
-      difficulty: this.realistic ? 'realistic' : 'arcade',
+      difficulty: this.simulator ? 'simulator' : this.realistic ? 'realistic' : 'arcade',
       spawnPoints: this.spawnPoints,
       spawnsUsed: this.playerSpawnsUsed,
       br: this.plan ? this.plan.br : null,
@@ -1802,7 +1816,7 @@ export class AirBattle {
     // one object, refilled: the HUD reads it and keeps nothing
     const mi = this._matchInfo || (this._matchInfo = { timeLeft: 0, mode: '', objective: '' });
     mi.timeLeft = Math.max(0, MATCH_TIME - this.time);
-    mi.mode = this.realistic ? 'Air Realistic' : 'Air Arcade';
+    mi.mode = this.simulator ? 'Air Simulator' : this.realistic ? 'Air Realistic' : 'Air Arcade';
     mi.objective = this.objectiveLine();
     hud.setMatchInfo(mi);
     hud.setCompass(p.yaw, this.compassMarkers());
@@ -1821,7 +1835,7 @@ export class AirBattle {
       const x = this._airExtra;
       const st = typeof p.flightStatus === 'function' ? p.flightStatus() : null;
       if (st) {
-        x.vspeed = st.climb;
+        x.vspeed = st.climb / PLANE_SPEED_SCALE; // the VSI reads design m/s, as the tape reads km/h
         x.fuel = p.spec.fuelCapacity > 0 ? st.fuel : null;
         x.engineTemp = st.engineTemp;
         x.wep = st.wep;
@@ -1858,7 +1872,7 @@ export class AirBattle {
         x.onGround = st.onGround;
         x.wheelBrake = st.wheelBrake;
       } else {
-        x.vspeed = p.vel.y;
+        x.vspeed = p.vel.y / PLANE_SPEED_SCALE; // the VSI reads design m/s, as the tape reads km/h
         x.fuel = p.spec.fuelCapacity > 0 ? p.fuel / p.spec.fuelCapacity : null;
         x.engineTemp = p.engineTemp;
         x.wep = p.wep;
@@ -1948,7 +1962,7 @@ export class AirBattle {
     if (p.alive && p.serviceFrac > 0 && p.serviceFrac < 1) return 'Servicing — hold position';
     if (p.alive && p.onGround) {
       if (p.serviceFrac >= 1) return 'Serviced — line up, full throttle, and take off';
-      if (p.speed > 1.5) return 'Brakes (B) — stop on your own field to be serviced';
+      if (p.speed > 1.5 * PLANE_SPEED_SCALE) return 'Brakes (B) — stop on your own field to be serviced';
       const field = airfieldAtPoint(p.position.x, p.position.z);
       if (!field || field.team !== p.team) return 'Not on your own field — no ground crew here';
     }
@@ -2044,7 +2058,7 @@ export class AirBattle {
     }
     for (const g of this.groundUnits) {
       if (!g.alive || g.isBase) continue;
-      if (this.realistic && g.team !== p.team && !g.isColumn) continue;
+      if (this.realistic && g.team !== p.team && (!g.isColumn || this.simulator)) continue;
       units.push(g);
     }
 
@@ -2093,7 +2107,7 @@ export class AirBattle {
       const dist = p.position.distanceTo(plane.position);
       const proj = wp.project(this.camera);
       const onScreen = proj.z < 1 && Math.abs(proj.x) < 1.1 && Math.abs(proj.y) < 1.1;
-      if (onScreen && dist < 1700) {
+      if (onScreen && dist < (this.simulator ? SIM_HUD.allyMarkerRangeAir : 1700)) {
         const cls = plane.team === p.team ? 'ally' : 'enemy';
         const arrow = cls === 'enemy' ? '▼' : '▽';
         const shown = Math.round(dist);
@@ -2151,7 +2165,9 @@ export class AirBattle {
         (proj.x * 0.5 + 0.5) * w,
         (-proj.y * 0.5 + 0.5) * h,
         `<span class="arrow">◆</span>${Math.round(d.hpFrac * 100)}% · ${Math.round(dist)}m`,
-        visible && dist < 2400,
+        // simulator: the depots stay on the map; no floating range and
+        // integrity readout that no pilot could have
+        visible && dist < 2400 && !this.simulator,
       );
     }
   }

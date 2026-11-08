@@ -788,8 +788,11 @@ export class ConvoyBattle extends Battle {
       }
       const wp = tmpV.set(t.position.x, t.position.y + 4, t.position.z);
       const proj = wp.project(this.camera);
-      const vis = proj.z < 1 && Math.abs(proj.x) < 1.1 && Math.abs(proj.y) < 1.1;
       const friendly = t.team === this.player.team;
+      // simulator: the column stays on the map (it is the objective), but an
+      // enemy lorry carries no on-screen tag
+      const vis = proj.z < 1 && Math.abs(proj.x) < 1.1 && Math.abs(proj.y) < 1.1 &&
+        (friendly || !this.simulator);
       const dist = Math.round(this.camera.position.distanceTo(t.position));
       if (t._markDist !== dist) {
         t._markDist = dist;

@@ -92,6 +92,22 @@ function boxesOf(spec) {
 
 const arr = (v) => [v.x, v.y, v.z];
 
+// The seats the REAL vehicle had (wave 8). The battles hand the interior a
+// spec with the player's crew upgrades applied (game/mods.js): the
+// "vitality" skill ADDS to spec.crew (an IS-2 arrives with crew 8), and
+// crewRoles(spec) then grows a bow gunner the four-man IS-2 and SU-100 never
+// had. The bonus is a pool of extra hit points, not men, so it is taken back
+// off here. (The Stuart's four men are not the damage model's four: stuart.js
+// states its own crewRoles.)
+export function realCrewCount(spec) {
+  const bonus = spec && spec.crewSkills && Number.isFinite(spec.crewSkills.crewBonus) ? spec.crewSkills.crewBonus : 0;
+  return Math.max(1, ((spec && spec.crew) | 0) - Math.max(0, bonus | 0));
+}
+
+export function realCrewRoles(spec) {
+  return crewRoles({ ...spec, crew: realCrewCount(spec) });
+}
+
 // Everything a station, a layout and a breech need, for one spec.
 export function deriveTankInterior(spec) {
   const { w, h, len, trackH } = spec.hull;
@@ -100,7 +116,7 @@ export function deriveTankInterior(spec) {
   const floor = (spec.hull.clear ?? trackH * 0.45) + 0.05;
   const roof = trackH + h; // hull roof, hull frame
   const box = boxesOf(spec);
-  const roles = crewRoles(spec);
+  const roles = realCrewRoles(spec);
   const casemate = sh.turret === 'casemate';
   const open = !!sh.openTurret;
   const rearDrive = !!(spec.chassis && spec.chassis.sprocket && spec.chassis.sprocket.z < 0);
@@ -317,6 +333,8 @@ export function deriveTankInterior(spec) {
 
   return {
     id: spec.id,
+    // the real crew's seats (wave 8): index.js offers only these stations
+    crewRoles: roles,
     colors: defaultColors(spec),
     stations,
     breech: turret || casemate ? breech : null,

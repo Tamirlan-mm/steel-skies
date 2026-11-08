@@ -12,12 +12,16 @@ import {
   PART_LABELS,
   RHO0,
   GRAV,
+  PLANE_SPEED_SCALE,
+  PLANE_SPECS,
+  capTunedSpeed,
 } from './planes.js';
 // The solid ground: terrain, plus any airfield standing on it. Everything in
 // this file that asks "where is the ground" asks this, never terrainHeight().
 import { groundSurfaceAt, airfieldObstacleAt } from '../world/airfield.js';
 import { disposeOwned } from '../core/materials.js';
 import { clamp, moveToward, wrapAngle } from '../core/utils.js';
+import { brOf } from '../game/battleRating.js';
 
 const tmpQ = new THREE.Quaternion();
 const tmpE = new THREE.Euler();
@@ -131,11 +135,14 @@ export const OIL_ENGINE_WEAR = 0.35;
 // ft/s) at the landing weight. Below SINK_FIRM the oleos absorb it and the
 // aeroplane stays down; between that and SINK_FAIL they throw a share of it
 // back (a bounce); past SINK_FAIL the legs fold; past SINK_CRASH nothing is
-// left to slide on. These are not scaled with the game's compressed airspeeds:
-// gravity and the masses here are real, so the energy the legs absorb is too.
-const SINK_FIRM = 2.4;
-const SINK_FAIL = 3.8;
-const SINK_CRASH = 6;
+// left to slide on. Every speed literal in this file is written at design scale
+// and goes through K: a path at K is the design path at K x the distance in the
+// same seconds (planes.js PLANE_SPEED_SCALE), sink rates included, and so is the
+// load on the legs against the flight model's own gravity.
+const K = PLANE_SPEED_SCALE;
+const SINK_FIRM = 2.4 * K;
+const SINK_FAIL = 3.8 * K;
+const SINK_CRASH = 6 * K;
 const BOUNCE_RETURN = 0.3; // fraction of the sink rate the oleos hand back
 // "Sink" is the speed INTO the surface, along its normal — not the vertical
 // speed. On level ground the two are the same; on a hillside or the face of
@@ -161,7 +168,7 @@ const BELLY_MU = 0.5; // a fuselage sliding on its radiator
 // A slope steeper than this at speed digs a wheel in and turns the aeroplane
 // over. The graded embankment is allowed more than the open hillside.
 const ROUGH_SLOPE = { concrete: 0.6, grass: 0.6, berm: 0.55, terrain: 0.32 };
-const ROUGH_SPEED = 11;
+const ROUGH_SPEED = 11 * K;
 // How fast the tail comes up on a takeoff run or settles on the roll-out, rad/s.
 const TAIL_RATE = 0.3;
 // Arcade's ground crew hold the brakes on for you whenever the throttle is
@@ -169,10 +176,10 @@ const TAIL_RATE = 0.3;
 const AUTO_BRAKE = 1;
 // Below this the aeroplane is stopped, and stays stopped on a slope it could
 // not hold on its brakes alone only if the engine says so.
-const STOP_SPEED = 0.05;
+const STOP_SPEED = 0.05 * K;
 // Into a hangar, a wall or a parked aeroplane faster than a brisk walk is a
 // wreck; slower, it is a bent spinner and an embarrassed pilot.
-const OBSTACLE_CRASH_SPEED = 5;
+const OBSTACLE_CRASH_SPEED = 5 * K;
 
 // Pilot limits. Blackout starts one tenth of a G above the instructor's
 // ceiling, which is what guarantees mouse flying never greys its own screen
@@ -269,6 +276,7 @@ export class Plane {
   constructor(scene, spec, team, displayName, isPlayer = false, difficulty = 'arcade') {
     this.id = nextId++;
     this.scene = scene;
+    capTunedSpeed(spec);
     this.spec = spec;
     this.team = team;
     this.displayName = displayName;
@@ -1571,7 +1579,7 @@ export class Plane {
     const thr = clamp(Number.isFinite(this.throttle) ? this.throttle : 0, 0, 1);
     let want;
     if (engine) want = PROP_IDLE_RPS + (PROP_MAX_RPS - PROP_IDLE_RPS) * thr ** 0.7;
-    else want = this._onGround ? 0 : clamp(this.speed / 60, 0, 1) * PROP_WINDMILL_RPS;
+    else want = this._onGround ? 0 : clamp(this.speed / (60 * K), 0, 1) * PROP_WINDMILL_RPS;
     // An aeroplane that comes into the world already flying (an air start)
     // has its propeller already turning: spooling it up from rest would show
     // a stopped prop — blades AND disc — for its first half-second aloft.
@@ -1629,7 +1637,7 @@ export class Plane {
     // ---- where the air is actually coming from ----
     tmpQ2.copy(this.quat).invert();
     tmpVb.copy(this.vel).applyQuaternion(tmpQ2);
-    const axial = Math.abs(tmpVb.z) + 0.6; // keeps the angles sane at a standstill
+    const axial = Math.abs(tmpVb.z) + 0.6 * K; // keeps the angles sane at a standstill
     this.aoa = Math.atan2(-tmpVb.y, axial);
     this.slip = Math.atan2(tmpVb.x, axial);
 
@@ -1993,7 +2001,7 @@ export class Plane {
     const sink = this._closureRate();
     const speed = this.speed;
     // A wingtip into the ground at any real speed cartwheels the aeroplane.
-    if (tipHit && speed > 8) {
+    if (tipHit && speed > 8 * K) {
       this.crash('Wingtip struck the ground', s, sink);
       return;
     }
@@ -2187,7 +2195,7 @@ export class Plane {
   // Turn a stopped aeroplane on the spot to face `yaw` (the ground crew
   // walking the tail round). Only on the ground and only at a standstill.
   swingTo(yaw) {
-    if (!this._onGround || this.speed > 1.5 || this.wrecked) return false;
+    if (!this._onGround || this.speed > 1.5 * K || this.wrecked) return false;
     this.groundYaw = wrapAngle(yaw);
     this.speed = 0;
     this.vel.set(0, 0, 0);
@@ -2211,7 +2219,7 @@ export class Plane {
     this._poseOnGround();
     tmpVh.set(Math.sin(this.groundYaw), 0, Math.cos(this.groundYaw));
     this.vel.copy(tmpVh).multiplyScalar(this.speed);
-    this.vel.y = this.speed * Math.tan(this.groundSlopePitch) + 0.8;
+    this.vel.y = this.speed * Math.tan(this.groundSlopePitch) + 0.8 * K;
     this.position.y += 0.05;
     this.aoa = this.groundPitch;
     this._airTime = 0;
@@ -2308,7 +2316,7 @@ export class Plane {
     // A wreck on its belly that is GAINING speed is going down a slope
     // steeper than the slide can hold: a ravine wall, the face of a cliff.
     // That ends in a heap at the bottom, not at 170 m/s along the ground.
-    if (this.wrecked && v > (this._slideV0 != null ? this._slideV0 : v) + 8) {
+    if (this.wrecked && v > (this._slideV0 != null ? this._slideV0 : v) + 8 * K) {
       this.crash('Slid over a drop', groundSurfaceAt(p.x, p.z, SURF_B), Math.abs(this.vel.y));
       return;
     }
@@ -2321,10 +2329,10 @@ export class Plane {
     if (!this.wrecked) {
       const rudder = clamp(this.groundRudder || 0, -1, 1);
       const aero = spec.yawRate * clamp(v / (spec.minSpeed * 1.2), 0, 1);
-      const wash = spec.yawRate * 0.45 * clamp(this.throttle, 0, 1) * clamp(1 - v / 25, 0, 1);
+      const wash = spec.yawRate * 0.45 * clamp(this.throttle, 0, 1) * clamp(1 - v / (25 * K), 0, 1);
       const tailOn = 1 - clamp(1 - this.groundPitch / Math.max(0.05, g.threePoint), 0, 1) * 0.85;
-      const wheel = 0.6 * tailOn * clamp(v / 2.5, 0, 1) * clamp(1 - v / 30, 0, 1);
-      const diff = brake > 0.5 && v < 8 ? 0.5 : 0;
+      const wheel = 0.6 * tailOn * clamp(v / (2.5 * K), 0, 1) * clamp(1 - v / (30 * K), 0, 1);
+      const diff = brake > 0.5 && v < 8 * K ? 0.5 : 0;
       this.groundYaw = wrapAngle(this.groundYaw + rudder * (aero + wash + wheel + diff) * dt);
     }
 
@@ -2357,7 +2365,7 @@ export class Plane {
     }
     // The ground rising faster than a wheel can climb: a bank or a wall.
     if (wantY - prevY > 0.6 + v * dt * ROUGH_SLOPE[s.kind]) {
-      if (v > 6) {
+      if (v > 6 * K) {
         this.crash('Ran into the bank', s);
         return;
       }
@@ -2409,7 +2417,7 @@ export class Plane {
     }
 
     // A wreck that has stopped sliding is a wreck.
-    if (this.wrecked && v < 0.3) this.writeOff();
+    if (this.wrecked && v < 0.3 * K) this.writeOff();
   }
 
   // The aeroplane is finished but did not explode: it stays where it stopped,
@@ -3039,4 +3047,14 @@ export function wingVapourStrength(plane, preset) {
   if (g < VAPOUR_MIN_G) return 0;
   const sn = plane.speed / Math.max(1, plane.spec ? plane.spec.maxSpeed : 1);
   return clamp((g - VAPOUR_MIN_G) / 2.5, 0.1, 1) * clamp(sn, 0, 1);
+}
+
+// Battle ratings are fitted to the DESIGN-scale speeds (battleRating.js reads
+// spec.maxSpeed / 70, and halving the world speed must not halve an aeroplane's
+// standing against the tanks: it took the P-51 from BR 4.3 to 2.7 and most types
+// to 1.0). brOf caches per id on first sight, so rate each type here, once, from
+// its design numbers, before anything asks. Until battleRating.js reads
+// spec.design itself, this is what keeps the ladder where it was.
+for (const s of Object.values(PLANE_SPECS)) {
+  if (s.design) brOf({ ...s, maxSpeed: s.design.maxSpeed });
 }

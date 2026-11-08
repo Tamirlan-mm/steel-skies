@@ -1,5 +1,5 @@
 import { TANK_SPECS } from '../vehicles/tanks.js';
-import { PLANE_SPECS, displaySpeedKmh } from '../vehicles/planes.js';
+import { PLANE_SPECS, PLANE_SPEED_SCALE, displaySpeedKmh } from '../vehicles/planes.js';
 import {
   progress, CREW_SKILLS, CREW_QUALS, CREW_MAX_LEVEL, LINEUP_MAX, SPAWN_START,
   specById,
@@ -82,7 +82,14 @@ const MODE_CHIP = { ground: 'GROUND ASSAULT', air: 'DOGFIGHT', combined: 'COMBIN
 const MODE_ORDER = ['ground', 'air', 'combined', 'convoy'];
 // the modes fought on the ground maps, which take the MAP chips (game/maps.js)
 const MAP_MODES = ['ground', 'convoy'];
-const DIFF_LABEL = { arcade: 'Arcade', realistic: 'Realistic' };
+// arcade / realistic / simulator (game/simRules.js)
+const DIFF_LABEL = { arcade: 'Arcade', realistic: 'Realistic', simulator: 'Simulator' };
+const DIFF_ORDER = ['arcade', 'realistic', 'simulator'];
+const DIFF_HINT = {
+  arcade: 'Markers, lead indicator, any camera',
+  realistic: 'Friendly fire, spotting only, realistic physics',
+  simulator: 'First person only: crew stations and cockpit, no enemy markers; bots see as buttoned-up crews',
+};
 
 const SCREEN_TITLE = {
   crew: 'CREW',
@@ -676,7 +683,9 @@ export class Garage {
     }
     const fire = statPct((s.gun.dmg * s.gun.rof) / 68);
     const agi = statPct(s.pitchRate / 1.35);
-    const spd = statPct(s.maxSpeed / 88);
+    // 88 is a design-scale reference and s.maxSpeed is world scale (with the
+    // owned mods in it, which s.design does not have), so K comes back out
+    const spd = statPct(s.maxSpeed / PLANE_SPEED_SCALE / 88);
     return `
     <div class="statRow"><label>FIREPOWER</label><div class="bar"><div style="width:${fire}%"></div></div></div>
     <div class="statRow"><label>AGILITY</label><div class="bar"><div style="width:${agi}%"></div></div></div>
@@ -883,12 +892,13 @@ export class Garage {
     const modeChips = MODE_ORDER
       .map((m) => `<button class="bmChip" data-bm="${m}"${this.respawnLock ? ' disabled' : ''}>${MODE_CHIP[m]}</button>`)
       .join('');
-    const diffChips = ['arcade', 'realistic']
-      .map((d) => `<button class="bmChip diffChip" data-diff="${d}"${this.respawnLock ? ' disabled' : ''}>${d.toUpperCase()}</button>`)
+    const diffChips = DIFF_ORDER
+      .map((d) => `<button class="bmChip diffChip" data-diff="${d}" title="${DIFF_HINT[d]}"${this.respawnLock ? ' disabled' : ''}>${d.toUpperCase()}</button>`)
       .join('');
     cards.battle = (this.card('CURRENT BATTLE', `
       <div class="gxBattleLine"><b>${MODE_LABEL[this.battleMode]} ${DIFF_LABEL[diff]}</b></div>
-      <div class="gxHint">Matchmaking bracket BR ${bracket.label}${this.respawnLock ? ' · locked for this battle' : ''}</div>
+      <div class="gxHint">${DIFF_LABEL[diff] || ''} matchmaking bracket BR ${bracket.label}${this.respawnLock ? ' · locked for this battle' : ''}</div>
+      ${diff === 'simulator' ? `<div class="gxHint">${DIFF_HINT.simulator}</div>` : ''}
       <div class="gxChips">${modeChips}</div>
       ${MAP_MODES.includes(this.battleMode) ? `<div class="gxChips">${GROUND_MAPS
     .map((m) => `<button class="bmChip mapChip" data-map="${m}"${this.respawnLock ? ' disabled' : ''}>${MAP_CHIP[m]}</button>`)
@@ -1830,7 +1840,7 @@ export class Garage {
     const br = spec ? brOf(spec) : 1;
     q('#gxModeStrip').textContent =
       `${MODE_LABEL[this.battleMode]} ${DIFF_LABEL[progress.getDifficulty()]} Battles · BR ${brLabel(br)}`;
-    q('#gxModeStrip').title = `Matchmaking bracket ${brBracket(br).label}`;
+    q('#gxModeStrip').title = `${DIFF_LABEL[progress.getDifficulty()] || ''} matchmaking bracket ${brBracket(br).label}`;
     if (this.touch) {
       // the thumb column's mode selector names the mode as its chip does
       const name = q('#gxModeName');

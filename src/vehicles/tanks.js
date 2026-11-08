@@ -790,15 +790,29 @@ export const TANK_SPECS = {
     neutralSteer: true, climbMax: 0.62, dispersion: 0.0014,
     gearbox: { forward: [0.13, 0.26, 0.45, 0.7, 1], reverse: [1], shift: 0.45 },
     consumables: { repair: 3, fpe: 1, firstAid: 1, smoke: 3 },
-    // 6.35 x 2.91 x 2.49m (Wikipedia; Fletcher, 'Cromwell Cruiser Tank'):
+    // 6.35 x 2.908 x 2.49m (Wikipedia; Fletcher, 'Cromwell Cruiser Tank'):
     // a low box on five big Christie wheels. Hull ROOF 1.73m, the turret
-    // roof 2.39 and the hatches 2.49.
-    hull: { w: 2.91, h: 0.81, len: 6.35, trackH: 0.92, clear: 0.41, sideDeg: 0 },
-    // a slab-sided welded box on a 1.52m ring
-    turret: { w: 1.98, h: 0.66, len: 2.0, offZ: 0.30 },
+    // roof 2.39 and the cupola 2.49.
+    // wave 8 (Cromwell lane), proportions taken from museum photographs
+    // (Bovington, Kubinka, AHM): the hull is a box BETWEEN the tracks, `bodyW`
+    // 2.08m of the 2.908m. `nose` is the bow in side view: a low near-vertical
+    // nose plate (tipZ, tipLowY..tipTopY, the first station's cap), a long
+    // shallow glacis back to the foot of the short VERTICAL driver's plate
+    // (plateZ, plateY..roof), which stands well back, right in front of the
+    // turret; bellyZ is where the lower nose meets the belly. Read by
+    // hullStations, cromwellDetails, combat/internals.js, interior/cromwell.js.
+    hull: {
+      w: 2.91, h: 0.70, len: 6.35, trackH: 0.92, clear: 0.41, sideDeg: 0,
+      bodyW: 2.08,
+      nose: { tipZ: 2.98, tipTopY: 0.90, tipLowY: 0.52, plateZ: 2.05, plateY: 1.18, bellyZ: 2.55 },
+    },
+    // a tall slab-sided bolted box, hexagonal in plan, close behind the
+    // driver's plate with the long Meteor deck behind it. 1.62 + 0.78 + the
+    // 0.09 cupola = the published 2.49
+    turret: { w: 1.84, h: 0.78, len: 2.0, offZ: 0.60 },
     // 75mm Mk V (L/36.5): the muzzle only just clears the nose
     gunLen: 2.10,
-    gunMount: { x: 0, y: 0.33, z: 0.90 },
+    gunMount: { x: 0, y: 0.39, z: 0.90 },
     armor: {
       // a VERTICAL 64mm driver's plate (no slope worth the name), 57mm nose
       // below it; sides 25 + a 14mm outer plate over the suspension, 32
@@ -832,19 +846,25 @@ export const TANK_SPECS = {
       hull: 'cromwell', turret: 'cromwellBox',
       // British practice: commander and gunner right of the gun, loader left;
       // driver on the RIGHT of the hull, the Besa gunner on the left
-      cupolaRight: true, cupola: { r: 0.30, h: 0.10, z: -0.45, sides: 12 },
-      loaderHatch: { r: 0.24, x: 0.45, z: -0.40 },
+      cupolaRight: true, cupola: { r: 0.30, h: 0.09, x: -0.42, z: -0.42, sides: 12 },
+      loaderHatch: { r: 0.24, x: 0.42, z: -0.40 },
       muzzleBrake: 'single', bowMg: true, bowMgLeft: true, driverRight: true,
-      headlights: true, turretBin: true,
+      // gunner (and commander behind him) RIGHT of the gun, loader left
+      gunnerRight: true,
+      // wave 8: internal mantlet in a framed opening; the flat guards stand
+      // clear above the track run and stop where the big pressed mudguards
+      // take over (cromwellDetails)
+      mantlet: 'cromwell', fenderLen: 4.40, fenderY: 1.15,
     },
     // 1944: SCC 15 olive drab (C-11)
     color: PAINT_UK_SCC15,
     desc: 'Fast low box on five big Christie wheels. Upright armour, quick gun — flank and hustle.',
-    // NW Europe 1944: the Allied white star on the hull sides and on the
-    // engine deck for the air (*verify* per unit)
+    // NW Europe 1944: the Allied white star on the turret flanks (the hull
+    // sides are behind the long guard lockers) and on the engine deck for
+    // the air (*verify* per unit)
     markings: [
-      { glyph: 'us_star_white', frame: 'hull', side: 'both', y: 1.35, z: 0.45, size: 0.44 },
-      { glyph: 'us_star_white', frame: 'hull', side: 'top', x: 0, z: -2.15, size: 0.80 },
+      { glyph: 'us_star_white', frame: 'turret', side: 'both', y: 0.40, z: 0.28, size: 0.36 },
+      { glyph: 'us_star_white', frame: 'hull', side: 'top', x: 0, z: -2.58, size: 0.70 },
     ],
   },
 };
@@ -1782,15 +1802,26 @@ function hullStations(spec) {
     ];
   }
   if (kind === 'cromwell') {
-    // Cromwell: an UPRIGHT box. The whole front is the vertical 64mm driver's
-    // plate (the cap of the first station), a short sloped nose plate under
-    // it back to the belly and a short 20-degree glacis over it to the roof.
+    // Cromwell (wave 8 rebuild, from photographs): a flat-topped box BETWEEN
+    // the tracks, one width from belly to roof (hull.bodyW). The bow in side
+    // view: a low near-vertical nose plate (the first station's cap), a long
+    // shallow glacis back to the foot of a short VERTICAL driver's plate that
+    // stands right in front of the turret; a short lower nose under it. Then
+    // roof and engine deck at one level to an upright rear plate.
+    const hb = (spec.hull.bodyW ?? w) / 2;
+    const N = spec.hull.nose;
+    const yGl = (z) => N.tipTopY + (N.tipZ - z) / (N.tipZ - N.plateZ) * (N.plateY - N.tipTopY);
+    // the side weld beads (idx 2/5) run at the foot of the driver's plate,
+    // just above the guards; ySpOf reads this too, for the hull MG's height
+    const yS = (lo, hi) => Math.min(hi - 0.01, Math.max(lo + 0.01, N.plateY));
+    const sec = (z, lo, hi, k = 1) => station(z, hb * k, lo, hb * k, yS(lo, hi), hb * k, hi);
     return [
-      station(f, wLow * 0.99, 0.84, wSp * 0.99, ySp, wR * 0.99, 1.50),
-      station(f - 0.30, wLow, 0.50, wSp, ySp, wR, yR),
-      station(f - 0.44, wLow, y0, wSp, ySp, wR, yR),
-      station(-2.95, wLow, y0, wSp, ySp, wR, yR),
-      station(-f, wLow * 0.97, y0 + 0.28, wSp * 0.99, ySp, wR * 0.99, yR - 0.05),
+      sec(N.tipZ, N.tipLowY, N.tipTopY, 0.97),
+      sec(N.bellyZ, y0, yGl(N.bellyZ)),
+      sec(N.plateZ, y0, N.plateY),
+      sec(N.plateZ - 0.02, y0, yR),
+      sec(-2.86, y0, yR),
+      sec(-f + 0.07, y0 + 0.24, yR - 0.02, 0.99),
     ];
   }
   if (kind === 'pershing') {
@@ -2254,10 +2285,23 @@ function exhaust(bins, spec, w, len, fenderY) {
     }
     return;
   }
+  if (kind === 'cromwell') {
+    // the Cromwell's exhaust is the cowl across the top of the rear plate,
+    // turning the gases DOWN, flush enough to stay inside the 6.35 m: a
+    // hood box over the louvred outlet, its lip angled down, painted (it is
+    // a sheet-steel deflector, not the pipes themselves)
+    const yR = spec.hull.trackH + spec.hull.h;
+    const zR = -len / 2 + 0.07;
+    const bw = (spec.hull.bodyW ?? w) * 0.86;
+    add(bins.hullArmour, boxAt(bw, 0.05, 0.07, 0, yR - 0.04, zR - 0.035));
+    const lip = new THREE.BoxGeometry(bw, 0.30, 0.03);
+    lip.rotateX(0.22);
+    add(bins.hullArmour, lip.translate(0, yR - 0.2, zR - 0.02));
+    // the sooted louvre slots it hides, just visible under the lip
+    add(bins.hullBare, boxAt(bw * 0.92, 0.2, 0.02, 0, yR - 0.24, zR - 0.01));
+    return;
+  }
   add(bins.hullBare, tubeX(0.11, 0.11, w * 0.52, 12, 0, fenderY + 0.06, zBack - 0.02));
-  // (the Cromwell's exhaust is the cowl across the top of the rear plate,
-  // flush with it: no tailpipes standing 30 cm out past the 6.35 m)
-  if (kind === 'cromwell') return;
   for (const sx of [-1, 1]) {
     add(bins.hullBare, tubeZ(0.06, 0.06, 0.3, 8, sx * w * 0.2, fenderY + 0.06, zBack - 0.2));
   }
@@ -2544,15 +2588,16 @@ function turretShell(spec, bins) {
     return;
   }
   if (kind === 'cromwellBox') {
-    // Cromwell: a slab-sided welded box, flat front, upright walls, the front
-    // corners chamfered — and a stowage bin hung on the rear (turretBin).
+    // Cromwell: a tall slab-sided box, flat VERTICAL front with the mantlet
+    // inside it, upright sides, and HEXAGONAL in plan: angled cheek plates
+    // take the narrower face out to the full width. Flat rear.
     const zF = 0.95;
     const zB = -1.05;
     const pts = [
-      [0, zF], [hw * 0.86, zF], [hw, zF - 0.14], [hw, zB], [-hw, zB],
-      [-hw, zF - 0.14], [-hw * 0.86, zF],
+      [0, zF], [hw * 0.74, zF], [hw, zF - 0.26], [hw, zB + 0.05], [hw * 0.95, zB],
+      [-hw * 0.95, zB], [-hw, zB + 0.05], [-hw, zF - 0.26], [-hw * 0.74, zF],
     ];
-    add(bins.turArmour, prismY(pts, t.h, 0.985));
+    add(bins.turArmour, prismY(pts, t.h, 0.995));
     return;
   }
   add(bins.turArmour, prismY(ovalPts(hw, hl, 10, 1.04), t.h, 0.9));
@@ -2876,6 +2921,144 @@ function attachMarks(spec, sealed, glass) {
   sealed.turMarks = marksGeometry(verts.turret, glass.turret);
 }
 
+// A plate lofted along Z through (z, yTop) pairs, x0..x1 wide, `th` thick.
+// Sections run front to back, the order loftHull wants.
+function guardPlate(x0, x1, th, prof) {
+  const lo = Math.min(x0, x1);
+  const hi = Math.max(x0, x1);
+  return loftHull(prof.map(([z, y]) => ({
+    z, pts: [[lo, y - th], [hi, y - th], [hi, y], [lo, y]],
+  })));
+}
+
+// The Cromwell's recognition furniture (wave 8), from photographs. What reads
+// at range: the big pressed mudguards falling over the idler and sprocket,
+// the long lockers down both guards, the framed gun opening, the very large
+// bolt bosses on the turret, and on the bow the visor beside the round Besa
+// ball, the headlamps on the glacis and the shackles on the nose plate.
+// Nothing here is armour: none of it grows the hit boxes.
+function cromwellDetails(bins, spec, stations, fenderY, glassAt) {
+  const yR = spec.hull.trackH + spec.hull.h;
+  const hb = (spec.hull.bodyW ?? spec.hull.w) / 2;
+  const N = spec.hull.nose;
+  const t = spec.turret;
+  const ch = spec.chassis;
+  const yGl = (z) => N.tipTopY + (N.tipZ - z) / (N.tipZ - N.plateZ) * (N.plateY - N.tipTopY);
+  const plateZ = N.plateZ;
+  const xOut = spec.hull.w / 2 + 0.015;
+  const gTop = fenderY + 0.035;
+
+  // ---- mudguards: a shell over the track, open underneath so the idler and
+  // sprocket show: a top plate falling away plus a deep outer cheek ----
+  const front = [[3.17, 0.74], [3.06, 0.86], [2.82, 1.04], [2.50, 1.14], [2.17, gTop]];
+  const frontLow = [[3.17, 0.62], [3.06, 0.66], [2.82, 0.74], [2.50, 0.92], [2.17, gTop - 0.06]];
+  const rear = [[-2.17, gTop], [-2.50, 1.13], [-2.86, 1.02], [-3.17, 0.78]];
+  const rearLow = [[-2.17, gTop - 0.06], [-2.50, 0.98], [-2.86, 0.80], [-3.17, 0.68]];
+  for (const sx of [-1, 1]) {
+    const a = sx * (hb + 0.01);
+    const b = sx * xOut;
+    add(bins.hullArmour, guardPlate(a, b, 0.04, front));
+    add(bins.hullArmour, guardPlate(a, b, 0.04, rear));
+    for (const [top, low] of [[front, frontLow], [rear, rearLow]]) {
+      add(bins.hullArmour, loftHull(top.map(([z, y], i) => {
+        const yb = low[i][1];
+        const l = Math.min(sx * xOut, sx * (xOut - 0.03));
+        const h = Math.max(sx * xOut, sx * (xOut - 0.03));
+        return { z, pts: [[l, yb], [h, yb], [h, y], [l, y]] };
+      })));
+    }
+    // the long locker down the guard, roof-high inboard with a raked outer
+    // face running down to the fender edge
+    const x0 = hb - 0.01;
+    const x1 = hb + 0.29;
+    const x2 = hb + 0.40;
+    const yBase = fenderY + 0.03;
+    const yTop = yR - 0.13;
+    const raw = sx > 0
+      ? [[x0, yBase], [x2, yBase], [x2, yBase + 0.08], [x1, yTop], [x0, yTop]]
+      : [[-x0, yTop], [-x1, yTop], [-x2, yBase + 0.08], [-x2, yBase], [-x0, yBase]];
+    const sec = (z) => ({ z, pts: raw });
+    add(bins.hullSteel, loftHull([sec(1.74), sec(-2.12)]));
+    // lid seams and hasps, which is all that says 'three lockers' from afar
+    for (const lz of [0.45, -0.85]) {
+      add(bins.hullSteel, boxAt(0.30, 0.02, 0.03, sx * (hb + 0.15), yTop + 0.008, lz));
+    }
+    for (const lz of [1.1, -0.2, -1.5]) {
+      add(bins.hullSteel, boxAt(0.02, 0.09, 0.07, sx * (hb + 0.355), yBase + 0.14, lz));
+    }
+  }
+  // the tow cable looped along the right-hand locker
+  add(bins.hullBare, tubeZ(0.02, 0.02, 3.3, 6, -(hb + 0.37), fenderY + 0.14, -0.2));
+
+  // ---- bow ----
+  // driver's visor RIGHT (-X) in the vertical plate, with its hinged cover
+  // above; the hull Besa's round ball is the generic bowMg on the left
+  const vx = -hb * 0.45;
+  const vy = N.plateY + (yR - N.plateY) * 0.52;
+  add(bins.hullArmour, boxAt(0.34, 0.15, 0.06, vx, vy, plateZ + 0.03));
+  add(bins.hullSteel, boxAt(0.38, 0.03, 0.05, vx, vy + 0.09, plateZ + 0.035));
+  visionGlass(glassAt.hull, vx, vy, plateZ + 0.03, 0.34, 0.15, 0.06, 0, 1);
+  // the two crew hatches in the short roof between plate and turret
+  for (const sx of [-1, 1]) {
+    add(bins.hullSteel, boxAt(0.44, 0.035, 0.32, sx * hb * 0.48, yR + 0.018, plateZ - 0.22));
+  }
+  // headlamps on the glacis behind their brush guards
+  for (const sx of [-1, 1]) {
+    const hx = sx * 0.46;
+    const hz = 2.42;
+    const hy = yGl(hz) + 0.11;
+    add(bins.hullSteel, tubeZ(0.085, 0.085, 0.12, 12, hx, hy, hz));
+    for (const dx of [-0.12, 0.12]) {
+      add(bins.hullSteel, barBetween(hx + dx, yGl(hz + 0.16) + 0.02, hz + 0.16, hx + dx, hy + 0.08, hz + 0.1, 0.012));
+    }
+    add(bins.hullSteel, barBetween(hx - 0.12, hy + 0.08, hz + 0.1, hx + 0.12, hy + 0.08, hz + 0.1, 0.012));
+  }
+  // shackles either side of the nose plate
+  const noseMid = (N.tipLowY + N.tipTopY) / 2;
+  for (const sx of [-1, 1]) {
+    add(bins.hullSteel, boxAt(0.09, 0.2, 0.10, sx * hb * 0.72, noseMid, N.tipZ + 0.04));
+  }
+
+  // ---- turret frame (origin on the hull roof at the ring centre) ----
+  const hw = t.w / 2;
+  const zFace = 0.95;
+  // the frame round the gun opening, in the turret face (the mantlet behind
+  // it is the gun frame's). Centred on the bore
+  const gy = spec.gunMount.y;
+  const oW = 0.76;
+  const oH = 0.44;
+  add(bins.turArmour, boxAt(oW + 0.10, 0.05, 0.05, 0, gy + oH / 2 + 0.025, zFace));
+  add(bins.turArmour, boxAt(oW + 0.10, 0.05, 0.05, 0, gy - oH / 2 - 0.025, zFace));
+  for (const sx of [-1, 1]) {
+    add(bins.turArmour, boxAt(0.05, oH, 0.05, sx * (oW / 2 + 0.025), gy, zFace));
+  }
+  // the very large bolt bosses of the turret's outer plates: domed heads a
+  // hand across, in a few wide-spaced rows. The turret's signature
+  const boss = (x, y, z, axis) => {
+    const g = axis === 'x'
+      ? tubeX(0.058, 0.046, 0.05, 8, x, y, z)
+      : tubeZ(0.046, 0.058, 0.05, 8, x, y, z);
+    add(bins.turArmour, g);
+  };
+  for (const sx of [-1, 1]) {
+    for (const z of [0.42, -0.16, -0.72]) {
+      boss(sx * (hw + 0.015), t.h * 0.80, z, 'x');
+      boss(sx * (hw + 0.015), t.h * 0.22, z, 'x');
+    }
+    // two on the face either side of the gun opening
+    boss(sx * hw * 0.62, t.h * 0.84, zFace + 0.015, 'z');
+    boss(sx * hw * 0.62, t.h * 0.16, zFace + 0.015, 'z');
+  }
+  // the small bins carried on the rear flanks (Type F)
+  for (const sx of [-1, 1]) {
+    add(bins.turSteel, boxAt(0.15, t.h * 0.40, 0.46, sx * (hw + 0.075), t.h * 0.47, -0.44));
+  }
+  // the 2-inch bomb thrower's muzzle in the roof, front left, angled forward
+  const bt = tubeY(0.045, 0.05, 0.12, 10, 0, 0, 0);
+  bt.rotateX(0.5);
+  add(bins.turSteel, bt.translate(hw * 0.55, t.h + 0.04, 0.6));
+}
+
 function buildTankGeometry(spec) {
   const { w, h, len, trackH } = spec.hull;
   const t = spec.turret;
@@ -2983,8 +3166,8 @@ function buildTankGeometry(spec) {
   // the guard 50-200mm inside the belt, so the track visibly passed through
   // it, and the clean horizontal fender line above an unbroken run is what
   // separates 'hull' from 'running gear' in the silhouette.
-  const fenderY = bandTop + 0.03;
-  const fenderLen = sh.boxFenders ? len * 1.02 : len * 0.9;
+  const fenderY = sh.fenderY ?? bandTop + 0.03;
+  const fenderLen = sh.fenderLen ?? (sh.boxFenders ? len * 1.02 : len * 0.9);
   const lipDrop = sh.sandShields ? 0.3 : 0.13;
   for (const side of [-1, 1]) {
     add(bins.hullArmour, grow(drawn.hull, boxAt(
@@ -3013,10 +3196,12 @@ function buildTankGeometry(spec) {
 
   // tow cable down one fender and the pioneer tools down the other: the
   // asymmetry is what real stowage looks like. The cable is bare, rusting wire.
-  add(bins.hullBare, tubeZ(
+  // (the Cromwell's guards carry long lockers: its cable is in cromwellDetails)
+  if (sh.hull !== 'cromwell') add(bins.hullBare, tubeZ(
     0.032, 0.032, len * 0.44, 8, -xTrack, fenderY + 0.07, len * 0.02,
   ));
-  for (const dzTool of [len * 0.2, -len * 0.02]) {
+  // (the Cromwell's left guard carries its lockers instead: cromwellDetails)
+  for (const dzTool of sh.hull === 'cromwell' ? [] : [len * 0.2, -len * 0.02]) {
     add(bins.hullMatt, boxAt(0.05, 0.045, 0.44, xTrack + 0.04, fenderY + 0.06, dzTool));
     add(bins.hullSteel, boxAt(0.12, 0.035, 0.2, xTrack + 0.04, fenderY + 0.06, dzTool - 0.3));
   }
@@ -3216,6 +3401,15 @@ function buildTankGeometry(spec) {
       // paint as the turret. In gunSteel (metalness 0.85) it read as a black
       // ball bolted to a green turret.
       add(bins.gunArmour, ball.scale(1, 1, 1.2));
+    } else if (sh.mantlet === 'cromwell') {
+      // Cromwell: an INTERNAL mantlet. It only fills the framed opening in
+      // the flat turret face (gun-frame z 0.05; the frame is in
+      // cromwellDetails), with the 75's bulbous collar out of its middle. The
+      // coax Besa's port is left of the gun (+X, coaxPortLocal) and the
+      // gunner's No. 50 telescope aperture right of it.
+      add(bins.gunArmour, boxAt(0.70, 0.38, 0.06, 0, 0, 0.03));
+      add(bins.gunArmour, tubeZ(rBase * 2.1, rBase * 1.7, 0.30, 16, 0, 0, 0.20));
+      add(bins.gunSteel, boxAt(0.08, 0.07, 0.02, -0.24, 0.07, 0.065));
     } else {
       add(bins.gunArmour, boxAt(t.w * 0.44, t.h * 0.6, 0.34, 0, 0, 0));
       // the bolt ring around a slab shield
@@ -3227,6 +3421,10 @@ function buildTankGeometry(spec) {
         ));
       }
     }
+    // wave 8: the coaxial MG's jacket standing out of its port beside the
+    // gun (coaxPortLocal; tankEntity fires the coax from the tip)
+    const cp = coaxPortLocal(spec);
+    if (cp) add(bins.gunSteel, tubeZ(0.03, 0.026, 0.2, 8, cp.x, cp.y, cp.z - 0.1));
   }
 
   // ---- stowage and signature details ----
@@ -3241,6 +3439,9 @@ function buildTankGeometry(spec) {
       add(bins.hullArmour, boxAt(0.5, 0.34, 0.26, sx * 0.30, hy, hz + 0.11));
       add(bins.hullSteel, boxAt(0.34, 0.16, 0.05, sx * 0.30, hy + 0.02, hz + 0.245));
     }
+    // wave 8: the M3's bow .30 is the assistant driver's, in the RIGHT (-X)
+    // hood face (the hull frame point tankEntity fires the hull MG from)
+    if (!drawn.bowMg) drawn.bowMg = { x: -0.30, y: hy - 0.04, z: hz + 0.30 };
   }
   // The M3's sponson guns are a symmetric PAIR of fixed .30 cal in the sponson
   // sides, close to the front plate — not one tube on the centre-right.
@@ -3263,6 +3464,9 @@ function buildTankGeometry(spec) {
     // stand half a metre proud of the nose
     const mgL = sh.bowMgLeft ? 0.24 : 0.44;
     add(bins.hullSteel, tubeZ(0.05, 0.05, mgL, 10, mx, my, mz + (sh.bowMgLeft ? 0.14 : 0.24)));
+    // wave 8: where the rounds leave — the tip of that tube, hull frame
+    // (tankEntity reads it through mgMountsFor)
+    drawn.bowMg = { x: mx, y: my, z: mz + (sh.bowMgLeft ? 0.14 : 0.24) + mgL / 2 };
   }
   // the T-34's big rectangular driver's hatch, on the LEFT of the glacis
   if (sh.glacisHatch) {
@@ -3328,8 +3532,9 @@ function buildTankGeometry(spec) {
       ));
     }
   }
+  if (sh.hull === 'cromwell') cromwellDetails(bins, spec, stations, fenderY, glassAt);
   if (sh.turretBin) {
-    // the Cromwell's big stowage bin across the turret rear
+    // a big stowage bin across the turret rear
     add(bins.turSteel, boxAt(t.w * 0.86, t.h * 0.62, 0.30, 0, t.h * 0.42, -t.len * 0.525 - 0.16));
   }
   if (sh.unditchLog) {
@@ -3709,6 +3914,81 @@ function paintFor(spec, tintColor) {
 // shadowed stage, and the X-ray views re-dress every mesh in the group, where
 // a ground quad would show up as a disc of "armour".
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Wave 8: machine-gun mount points (user feedback: "the MG fires out of the
+// main gun's muzzle"). The coax sits in its own port in the mantlet BESIDE the
+// gun and is laid with it; the hull MG sits in its ball in the front plate and
+// has its own limited arc. Frames: coax in the GUN frame (gunGroup: +Z along
+// the bore from the trunnion), hull MG in the HULL frame (group). +X is the
+// vehicle's LEFT, so a gun on the right is at -X.
+//   coax side: Tiger, Panther (loader's side), T-34-85, IS-2, the US guns —
+//   right of the gun; the Cromwell's BESA — left (British loader-operator).
+//   gun types and hull arcs (deg, yaw either way / up / down) are period
+//   figures, approximate: ball mounts were +-12..15 deg in traverse.
+// The SU-100 never carried a machine gun (the crew had sub-machine guns); the
+// game's spec gives it one, so it is mounted as a coax-style gun beside the
+// D-10S in the casemate. combat/bullets.js MG_TYPES holds rof/speed/cone.
+const MG_BY_NATION = { Germany: 'MG34', USSR: 'DT', USA: 'M1919', Britain: 'BESA' };
+const MG_MOUNTS = {
+  stuart: { coax: { x: -0.2 }, hull: { yaw: 15, up: 20, down: 8 } },
+  t34: { coax: { x: -0.28 }, hull: { yaw: 12, up: 12, down: 6 } },
+  tiger: { coax: { x: -0.3 }, hull: { yaw: 15, up: 20, down: 10 } },
+  su100: { coax: { x: -0.19 }, hull: null },
+  pershing: { coax: { x: -0.3 }, hull: { yaw: 15, up: 18, down: 6 } },
+  panther: { coax: { x: -0.3 }, hull: { yaw: 15, up: 20, down: 10 } },
+  sherman76: { coax: { x: -0.3 }, hull: { yaw: 15, up: 18, down: 6 } },
+  is2: { coax: { x: -0.3 }, hull: null },
+  cromwell: { coax: { x: 0.3 }, hull: { yaw: 15, up: 15, down: 8 } },
+};
+
+// Where the coax port's muzzle sits in the gun frame: beside the bore, just
+// proud of the mantlet face at that point (each mantlet type's own surface).
+// null for a vehicle without a coax (the quad Flak, or no spec.mg).
+export function coaxPortLocal(spec) {
+  const sh = spec.shape || {};
+  if (sh.quadGun || !spec.mg) return null;
+  const m = MG_MOUNTS[spec.id];
+  if (m && m.coax === null) return null;
+  const t = spec.turret;
+  const x = m && m.coax && m.coax.x != null ? m.coax.x : -0.25;
+  const y = m && m.coax && m.coax.y != null ? m.coax.y : -0.02;
+  let face;
+  if (sh.mantlet === 'chin') {
+    const mr = t.h * 0.40;
+    face = 0.02 + Math.sqrt(Math.max(0, mr * mr - y * y));
+  } else if (sh.mantlet === 'wide') {
+    const rx = t.w * 0.25;
+    const ry = t.h * 0.42;
+    face = 0.08 + 0.36 * 0.78 * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2 - (y / ry) ** 2));
+  } else if (sh.ballMantlet || sh.turret === 'hexCast' || sh.turret === 'castOval') {
+    const r = sh.mantletR ?? t.h * 0.44;
+    face = 1.2 * Math.sqrt(Math.max(0, r * r - x * x - y * y));
+  } else {
+    face = 0.17;
+  }
+  return { x, y, z: face + 0.06 };
+}
+
+// The vehicle's machine guns: { coax: {x,y,z,type} | null, hull: {x,y,z,type,
+// yaw,up,down (radians)} | null }. The hull point is the tip of the ball-mount
+// tube the geometry actually drew (drawn.bowMg).
+export function mgMountsFor(spec) {
+  const type = MG_BY_NATION[spec.nation] || 'MG34';
+  const m = MG_MOUNTS[spec.id] || {};
+  const c = coaxPortLocal(spec);
+  const coax = c ? { ...c, type: (m.coax && m.coax.type) || type } : null;
+  let hull = null;
+  const bow = spec.mg ? cachedTankGeometry(spec).drawn.bowMg : null;
+  if (bow && m.hull !== null) {
+    const a = m.hull || { yaw: 15, up: 15, down: 8 };
+    hull = {
+      x: bow.x, y: bow.y, z: bow.z, type: a.type || type,
+      yaw: a.yaw * DEG, up: a.up * DEG, down: a.down * DEG,
+    };
+  }
+  return { coax, hull };
+}
+
 export function buildTankMesh(spec, tintColor = null, teamColor = 0x4f8fd0, opts = {}) {
   const color = paintFor(spec, tintColor);
   const battleBuild = arguments.length >= 3 && teamColor != null;

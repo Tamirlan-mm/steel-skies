@@ -102,11 +102,42 @@ function isLevel(v) {
 // where the backlog (1.1) puts that class on "medium" — high measured GPU p95
 // 15-31 ms there against the 13 ms budget. Intel integrated graphics (not Arc)
 // is capped at medium; a software rasteriser gets low.
+//
+// Wave 8: the tier a GPU can hold at 60 fps follows the pixels it has to fill.
+// The most canvas pixels each class is given each tier for (past medium's: low).
+// The anchor is measured (Iris Xe, combined_pan, GPU ms at scale 1, wave 8
+// journal); the other classes are scaled from it by their published fill rate,
+// so they are estimates and the dynamic resolution absorbs an error of a step.
+//   1920x1080 2.07e6 · 2560x1305 3.34e6 · 2560x1440 3.69e6 · 3440x1440 4.95e6
+//   3840x2160 8.29e6
+export const TIER_PIXELS = Object.freeze({
+  integrated: { high: 0, medium: 3.0e6 },      // Iris Xe, UHD, Vega, 780M
+  entry: { high: 0, medium: 4.2e6 },           // MX, GT, GTX 1050, Arc A3
+  apple: { high: 2.5e6, medium: 9e6 },         // M-series (a retina canvas is big)
+  discrete: { high: 4.2e6, medium: 12e6 },     // GTX 1060 .. RTX 3060
+  strong: { high: Infinity, medium: Infinity }, // RTX xx70 and up, RX x700 and up
+  unknown: { high: 2.5e6, medium: Infinity },  // a browser that hides the name
+});
+
+// Wave 8: the floor of the dynamic resolution, per tier. The old single 0.6
+// drew a 1440p battle at 1536x783 and stretched it over the screen, which is
+// what "everything is blurred on a big monitor" looks like; a frame budget
+// missed at these floors is better spent on the tier below.
+export const RENDER_SCALE_FLOOR = Object.freeze({ high: 0.8, medium: 0.75, low: 0.7 });
+
 export function gpuClassOf(gpu) {
   const g = typeof gpu === 'string' ? gpu : '';
   if (!g) return 'unknown';
   if (/SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(g)) return 'software';
+  // Intel's "Arc Graphics" is the integrated GPU of a Core Ultra
+  if (/\bArc(\(TM\))?\s*(A3\d\d|Graphics)/i.test(g)) return 'entry';
   if (/Intel/i.test(g) && !/\bArc\b/i.test(g)) return 'integrated';
+  // an APU: "Radeon(TM) Graphics", "Vega 8", "780M", "R7 Graphics" (not RX Vega)
+  if (/Radeon(\(TM\))?\s*(Vega\s*\d|\d{3}M\b|R[2-7]\b|Graphics)/i.test(g)) return 'integrated';
+  if (/Mali|Adreno|PowerVR/i.test(g)) return 'integrated';
+  if (/Apple\s*(M\d|GPU)/i.test(g)) return 'apple';
+  if (/\b(RTX\s?(20[7-8]0|30[7-9]0|40[6-9]0|50[6-9]0)|RX\s?([6-9][7-9]\d\d)|TITAN|Arc(\(TM\))?\s*A7\d\d)/i.test(g)) return 'strong';
+  if (/\b(GT\s?\d{3,4}|MX\s?\d{3}|GTX\s?([5-9]\d\d|10[1-5]0|16[3-5]0)|RX\s?[45][0-4]0|R[5-9]\s\d{3}|HD\s?\d{4})/i.test(g)) return 'entry';
   return 'discrete';
 }
 
@@ -115,6 +146,7 @@ export function postFXQualityFor(hardware) {
   let memory;
   let mobile;
   let gpu;
+  let pixels;
 
   if (typeof hardware === 'number') {
     cores = hardware;
@@ -123,6 +155,7 @@ export function postFXQualityFor(hardware) {
     memory = hardware.memory;
     mobile = hardware.mobile;
     gpu = hardware.gpu;
+    pixels = hardware.pixels;
   }
 
   const nav = typeof navigator !== 'undefined' ? navigator : null;
@@ -139,7 +172,14 @@ export function postFXQualityFor(hardware) {
 
   const cls = gpuClassOf(gpu);
   if (mobile || cores <= 4 || memory <= 2 || cls === 'software') return 'low';
-  if (cores < 8 || memory <= 4 || cls === 'integrated') return 'medium';
+  // Wave 8: the frame's cost follows the canvas. hardware.pixels is the
+  // drawing buffer's pixel count (omitted: the class's best tier). Measured at
+  // 2560x1305 on Iris Xe, GPU ms p50 of a battle: high 37-42, medium 18-21,
+  // low 11-17.
+  const lim = TIER_PIXELS[cls] || TIER_PIXELS.discrete;
+  const px = Number.isFinite(pixels) && pixels > 0 ? pixels : NaN;
+  if (px > lim.medium) return 'low';
+  if (cores < 8 || memory <= 4 || lim.high <= 0 || px > lim.high) return 'medium';
   return 'high';
 }
 
@@ -582,6 +622,10 @@ const FinishShader = {
     // resolution (0 at full resolution: the pass is then what it always was)
     uSharp: { value: 0 },
     uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
+    // wave 8: a frame drawn below the canvas resolution is stretched with a
+    // Catmull-Rom (bicubic) filter instead of the bilinear one the texture
+    // unit gives for free: five bilinear taps, a visibly crisper upscale
+    uUpscale: { value: 0 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -605,7 +649,33 @@ const FinishShader = {
     uniform float uAspect;
     uniform float uSharp;
     uniform vec2 uTexel;
+    uniform float uUpscale;
     varying vec2 vUv;
+
+    // Catmull-Rom in five bilinear taps (the four corner taps of the 4x4
+    // kernel carry ~1 % of the weight and are dropped; the rest is
+    // renormalised). uTexel is 1 / the source size.
+    vec3 ssCatmullRom( vec2 uv ) {
+      vec2 size = 1.0 / uTexel;
+      vec2 sp = uv * size;
+      vec2 t1 = floor( sp - 0.5 ) + 0.5;
+      vec2 f = sp - t1;
+      vec2 w0 = f * ( -0.5 + f * ( 1.0 - 0.5 * f ) );
+      vec2 w1 = 1.0 + f * f * ( -2.5 + 1.5 * f );
+      vec2 w2 = f * ( 0.5 + f * ( 2.0 - 1.5 * f ) );
+      vec2 w3 = f * f * ( -0.5 + 0.5 * f );
+      vec2 w12 = w1 + w2;
+      vec2 t0 = ( t1 - 1.0 ) * uTexel;
+      vec2 t3 = ( t1 + 2.0 ) * uTexel;
+      vec2 t12 = ( t1 + w2 / w12 ) * uTexel;
+      vec3 r = texture2D( tDiffuse, vec2( t12.x, t0.y ) ).rgb * ( w12.x * w0.y );
+      r += texture2D( tDiffuse, vec2( t0.x, t12.y ) ).rgb * ( w0.x * w12.y );
+      r += texture2D( tDiffuse, t12 ).rgb * ( w12.x * w12.y );
+      r += texture2D( tDiffuse, vec2( t3.x, t12.y ) ).rgb * ( w3.x * w12.y );
+      r += texture2D( tDiffuse, vec2( t12.x, t3.y ) ).rgb * ( w12.x * w3.y );
+      float ws = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+      return r / ws;
+    }
 
     vec3 ssToLinear( vec3 c ) {
       return mix( c / 12.92, pow( ( c + 0.055 ) / 1.055, vec3( 2.4 ) ), step( vec3( 0.04045 ), c ) );
@@ -622,6 +692,7 @@ const FinishShader = {
 
     void main() {
       vec4 tex = texture2D( tDiffuse, vUv );
+      if ( uUpscale > 0.5 ) tex.rgb = ssCatmullRom( vUv );
       if ( uSharp > 0.0 ) {
         // AMD CAS-style: a cross of four neighbours (source texels), weighted
         // down where the local contrast is already high, so edges get crisper
@@ -1602,6 +1673,10 @@ export function blurStreakPx(camera, prevVP, p, dt, width, height) {
 //   opts.aa        'smaa' (default) or 'fxaa' on the high tier: one pass in
 //                  place of SMAA's three (the hangar: SMAA cost 4.4-5 ms of
 //                  a 1080p frame on Iris Xe, FXAA well under 1)
+//   opts.bigCanvas pixels of canvas past which the high tier trades its two
+//                  costliest fixed effects for cheaper ones before any
+//                  resolution is given up: SMAA -> FXAA + a light sharpen, GTAO
+//                  16 -> 8 samples (off when omitted; the battle passes 2.4e6)
 //   opts.preset    a composed preset: sets the L-07 grade (setPreset later)
 //   opts.finish    false to build without the grade/lens pass
 export function createPostFX(renderer, scene, camera, opts = {}) {
@@ -1641,6 +1716,12 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   const aoScale = Number.isFinite(opts.aoScale) ? Math.min(1, Math.max(0.25, opts.aoScale)) : 1;
   const aoSamples = Number.isFinite(opts.aoSamples) ? Math.min(16, Math.max(4, Math.round(opts.aoSamples))) : 16;
   const aaKind = opts.aa === 'fxaa' ? 'fxaa' : 'smaa';
+  const bigCanvasPx = Number.isFinite(opts.bigCanvas) ? opts.bigCanvas : Infinity;
+  const isBigCanvas = () => {
+    const pr = renderer.getPixelRatio() || 1;
+    return width * height * pr * pr > bigCanvasPx;
+  };
+  let builtBig = false; // what the chain standing now was built for
   const bloomOpts = opts.bloom || {};
   let bloomStrength = Number.isFinite(bloomOpts.strength) ? bloomOpts.strength : 0.28;
   let bloomRadius = Number.isFinite(bloomOpts.radius) ? bloomOpts.radius : 0.5;
@@ -1727,13 +1808,20 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   // opts.minScale and 1. Without a timer query the frame interval stands in,
   // and then only a clearly slow frame rate lowers it.
   let renderScale = 1;
+  // wave 8: a scale the player pinned (no auto); survives a tier change
+  let pinned = NaN;
   const auto = {
     on: !!opts.autoScale,
     // a number, or one per tier: { high: 12, medium: 8.5 }
     target: Number.isFinite(opts.targetMs) || (opts.targetMs && typeof opts.targetMs === 'object') ? opts.targetMs : 12,
     // the floor; the low tier may go a step further (0.5): it has no chain
     // to spend the pixels on and its player asked for speed
-    min: Number.isFinite(opts.minScale) ? Math.min(1, Math.max(0.4, opts.minScale)) : 0.6,
+    // (wave 8: or one per tier, { high: 0.8, medium: 0.75, low: 0.7 })
+    min: opts.minScale && typeof opts.minScale === 'object'
+      ? { ...opts.minScale }
+      : Number.isFinite(opts.minScale) ? Math.min(1, Math.max(0.4, opts.minScale)) : 0.6,
+    lastSample: -1e9,     // performance.now() of the last GPU sample
+    armed: NaN,           // when the timer was first asked for one
     ema: NaN,
     n: 0,
     lastChange: 0,
@@ -1908,6 +1996,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   // Builds the chain for the current quality. Returns false — leaving the
   // object in the bypassed state — if anything at all refuses to allocate, so
   // the caller's fallback path is the only thing that has to work.
+  let aaNow = 'none';
   function build() {
     teardown();
     if (quality === 'low' || !curScene || !curCamera) return false;
@@ -1924,7 +2013,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       renderPass = new RenderPass(curScene, curCamera);
       renderPass.__kind = 'render';
       if (quality === 'high') {
-        aoPass = buildAO(curScene, curCamera, Math.max(1, Math.round(ew * aoScale)), Math.max(1, Math.round(eh * aoScale)), aoPreference, aoSamples);
+        const samples = isBigCanvas() ? Math.min(aoSamples, 8) : aoSamples;
+        aoPass = buildAO(curScene, curCamera, Math.max(1, Math.round(ew * aoScale)), Math.max(1, Math.round(eh * aoScale)), aoPreference, samples);
         if (aoPass && aoScale < 1) {
           // the composer resizes every pass to the frame; this one works at
           // its share of it (its depth reads are by uv, so any size works)
@@ -2012,7 +2102,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       guardOutput(outputPass, ew, eh);
       composer.addPass(keepDepth(outputPass));
 
-      if (quality === 'high' && aaKind === 'fxaa') {
+      builtBig = isBigCanvas();
+      aaNow = quality !== 'high' ? 'none' : aaKind === 'smaa' && builtBig ? 'fxaa' : aaKind;
+      if (aaNow === 'fxaa') {
         // the hangar's cheaper edge filter (opts.aa); one display-referred pass
         const fx = new ShaderPass(FXAAShader);
         fx.__kind = 'fxaa';
@@ -2151,10 +2243,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       const ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
       gl.deleteQuery(q);
       gpuQ.pending.shift();
-      if (!disjoint) sampleGpu(ns / 1e6);
+      if (!disjoint) sampleGpu(ns / 1e6, true);
     }
   }
   function minScale() {
+    if (auto.min && typeof auto.min === 'object') {
+      const v = auto.min[quality];
+      return Number.isFinite(v) ? Math.min(1, Math.max(0.4, v)) : 0.6;
+    }
     // low may go one step pair further than the floor (0.6 -> 0.5)
     return quality === 'low' ? Math.max(0.4, auto.min - 0.1) : auto.min;
   }
@@ -2177,12 +2273,27 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     a.sort();
     return a[Math.min(n - 1, Math.floor(n * 0.9))];
   }
-  function sampleGpu(ms) {
+  // real: a GPU time from a timer; else the frame interval standing in for one
+  // (which must not count as the timer being alive, nor be read as GPU time)
+  function sampleGpu(ms, real) {
     if (!(ms > 0) || ms > 500) return;
     auto.ring[auto.n % auto.ring.length] = ms;
-    auto.lastMs = ms;
+    if (real) {
+      auto.lastMs = ms;
+      auto.lastSample = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    }
     auto.ema = Number.isFinite(auto.ema) ? auto.ema * 0.9 + ms * 0.1 : ms;
     auto.n++;
+  }
+  // Is the timer really delivering? Some drivers expose the query and then
+  // never make a result available, or report every frame disjoint; a chain
+  // that waited for those samples never moved its resolution at all (telemetry:
+  // Iris Xe at 1440p sitting at scale 1 and 20 fps for half an hour). Three
+  // seconds of frames without a sample and the frame interval stands in.
+  function timerAlive(now) {
+    if (!gpuQ || passHook) return false;
+    if (!Number.isFinite(auto.armed)) auto.armed = now;
+    return now - Math.max(auto.lastSample, auto.armed) < 3000;
   }
   // the renderer's own pixel ratio while the low tier has scaled it, else NaN
   let basePR = NaN;
@@ -2203,7 +2314,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     auto.n = 0;
   }
   function setScale(s) {
-    const q = Math.round(Math.min(1, Math.max(minScale(), s)) * 20) / 20;
+    // the floor binds the controller; a pinned scale is the player's own word
+    const lo = auto.on ? minScale() : 0.4;
+    const q = Math.round(Math.min(1, Math.max(lo, s)) * 20) / 20;
     if (q === renderScale) return renderScale;
     renderScale = q;
     auto.ema = NaN;
@@ -2241,8 +2354,24 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const iv = Number.isFinite(auto.lastFrame) ? now - auto.lastFrame : NaN;
     auto.lastFrame = now;
-    const timed = (gpuQ && !passHook) || now - auto.external < 2000;
-    if (!timed && iv > 0 && iv < 200) sampleGpu(iv);
+    const timed = timerAlive(now) || now - auto.external < 2000;
+    // the two clocks measure different things: never mix them in one average
+    if (timed !== auto.timedMode) {
+      auto.timedMode = timed;
+      auto.ema = NaN;
+      auto.n = 0;
+      auto.probe = null;
+    }
+    // The first seconds of a battle are not its frame rate (uploads, first draws,
+    // the driver settling): judged, they threw every battle to the floor at once,
+    // and a scale comes back up far more slowly than it goes down.
+    if (!Number.isFinite(auto.settleUntil)) auto.settleUntil = now + 3000;
+    if (now < auto.settleUntil) {
+      auto.ema = NaN;
+      auto.n = 0;
+      return;
+    }
+    if (!timed && iv > 0 && iv < 200) sampleGpu(iv, false);
     if (!auto.on || auto.n < 20 || now - auto.lastChange < 1000) return;
     const e = auto.ema;
     // Without GPU time the frame interval is all there is, and a browser
@@ -2254,13 +2383,16 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       const pr = auto.probe;
       auto.probe = null;
       if (!timed && e > pr.before * 0.92) {
+        // and the next probe waits longer (each one rebuilds the buffers)
+        auto.capHold = Math.min(300000, (auto.capHold || 30000) * 2);
         auto.capped = now;
         setScale(pr.scale);
         auto.lastChange = now;
         return;
       }
+      auto.capHold = 0;
     }
-    if (!timed && now - auto.capped < 60000) return;
+    if (!timed && now - auto.capped < (auto.capHold || 60000)) return;
     // without GPU time only a clearly slow frame rate (< ~45 fps) counts
     const target = timed ? targetMs() : 22;
     const tail = timed ? tailMs() : Infinity;
@@ -2272,7 +2404,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       // cost is roughly pixels (scale squared), a little less in practice
       const ratio = Math.min(overMean ? target / e : 1, overTail ? tail / p : 1);
       const want = renderScale * Math.sqrt(ratio) * 0.98;
-      setScale(Math.min(renderScale - 0.05, want));
+      // (a timed step is at most 0.1: one bad second is not worth the floor)
+      const step = Math.min(renderScale - 0.05, want);
+      setScale(timed ? Math.max(renderScale - 0.1, step) : step);
       auto.lastChange = now;
       auto.lastDown = now;
     } else if (renderScale < 1 && (timed ? upFits(e, p, target, tail) : e < 18 && now - auto.lastDown > 10000)) {
@@ -2306,7 +2440,11 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
         finishPass.uniforms.uAspect.value = sz.height > 0 ? sz.width / sz.height : 16 / 9;
         // P-04: sharpen a frame drawn below the canvas resolution, more the
         // further below it is (0.6 at the 0.6 floor)
-        finishPass.uniforms.uSharp.value = renderScale < 1 ? Math.min(0.6, (1 - renderScale) * 1.5) : 0;
+        // (wave 8: and a light one where FXAA stands in for SMAA, whose softness
+        // it takes back; bicubic instead of bilinear for any upscale)
+        const aaSharp = aaNow === 'fxaa' && bigCanvasPx < Infinity ? 0.3 : 0;
+        finishPass.uniforms.uSharp.value = renderScale < 1 ? Math.min(0.6, aaSharp + (1 - renderScale) * 1.2) : aaSharp;
+        finishPass.uniforms.uUpscale.value = renderScale < 1 ? 1 : 0;
         finishPass.uniforms.uTexel.value.set(1 / Math.max(1, sz.width), 1 / Math.max(1, sz.height));
       }
       const timing = gpuBegin();
@@ -2344,6 +2482,11 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       width = Math.max(1, Math.floor(w) || 1);
       height = Math.max(1, Math.floor(h) || 1);
       if (!composer) return;
+      // a window dragged across the bigCanvas line gets the chain of its size
+      if (quality === 'high' && bigCanvasPx < Infinity && builtBig !== isBigCanvas()) {
+        build();
+        return;
+      }
       try {
         composer.setPixelRatio(pixelRatio());
         composer.setSize(width, height);
@@ -2361,6 +2504,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     setScene(scn) {
       if (!scn || scn === curScene) return;
       curScene = scn;
+      auto.settleUntil = NaN; // a new battle settles again
       if (renderPass) renderPass.scene = scn;
       if (aoPass) aoPass.scene = scn;
       if (!composer && !broken && quality !== 'low') build();
@@ -2397,6 +2541,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
         broken = false;
         build();
       }
+      if (Number.isFinite(pinned)) setScale(pinned);
       return quality;
     },
 
@@ -2409,9 +2554,12 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     get renderScale() {
       return renderScale;
     },
-    // A fixed scale (auto stays as it was; call setAutoScale(false) to pin).
+    // A fixed scale (auto stays as it was; call setAutoScale(false) to pin:
+    // with auto off it is kept across tier changes).
     setRenderScale(s) {
-      return Number.isFinite(s) ? setScale(s) : renderScale;
+      if (!Number.isFinite(s)) return renderScale;
+      if (!auto.on) pinned = s;
+      return setScale(s);
     },
     // { enabled, targetMs, minScale }; enabled false puts the scale back to 1.
     setAutoScale(o = {}) {
@@ -2420,6 +2568,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
       if (Number.isFinite(cfg.targetMs)) auto.target = Math.max(4, cfg.targetMs);
       else if (cfg.targetMs && typeof cfg.targetMs === 'object') auto.target = { ...cfg.targetMs };
       if (Number.isFinite(cfg.minScale)) auto.min = Math.min(1, Math.max(0.4, cfg.minScale));
+      else if (cfg.minScale && typeof cfg.minScale === 'object') auto.min = { ...cfg.minScale };
+      pinned = NaN;
       if (Number.isFinite(cfg.tailMs)) auto.tail = Math.max(4, cfg.tailMs);
       else if (cfg.tailMs && typeof cfg.tailMs === 'object') auto.tail = { ...cfg.tailMs };
       if (!auto.on) resetScale();
@@ -2431,7 +2581,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // A GPU time for the whole chain measured by someone else (the bench).
     reportGpuMs(ms) {
       auto.external = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      sampleGpu(ms);
+      sampleGpu(ms, true);
     },
     // What the controller sees: { enabled, scale, ema, last, targetMs, timer }.
     get autoScaleState() {
@@ -2439,7 +2589,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
         enabled: auto.on, scale: renderScale, ema: auto.ema, last: auto.lastMs, targetMs: auto.target, timer: !!gpuQ,
         // this tier's target, and whether the frame rate was found not to
         // follow the resolution (a rAF cap or the CPU: no GPU timer)
-        target: targetMs(), tail: tailMs(), p90: p90(), floor: minScale(), capped: (typeof performance !== 'undefined' ? performance.now() : Date.now()) - auto.capped < 60000,
+        aa: aaNow, pinned: Number.isFinite(pinned) ? pinned : null,
+        timerLive: gpuQ ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) - auto.lastSample < 3000 : false,
+        target: targetMs(), tail: tailMs(), p90: p90(), floor: minScale(), capped: (typeof performance !== 'undefined' ? performance.now() : Date.now()) - auto.capped < (auto.capHold || 60000),
       };
     },
 

@@ -36,7 +36,7 @@ import {
 // rotation sprung, the keyboard nose-follow a spring rather than a constant
 // rate. Owning it here as well is what keeps a combined-arms sortie from
 // juddering and lagging where the same aeroplane in the air battle does not.
-import { PlaneCamera } from './planeCamera.js';
+import { PlaneCamera, ViewSpring, smoothMax } from './planeCamera.js';
 import { randomPreset, MAP_PRESETS } from '../world/presets.js';
 import { Tank } from '../vehicles/tankEntity.js';
 // namespace import as well: the shared penetration forecast (contract F1) is
@@ -45,7 +45,7 @@ import { Tank } from '../vehicles/tankEntity.js';
 import * as tankMod from '../vehicles/tankEntity.js';
 import { TANK_SPECS, shellPenAt, gateTankShadows, installShadowProxyGate } from '../vehicles/tanks.js';
 import { Plane } from '../vehicles/planeEntity.js';
-import { PLANE_SPECS, displaySpeedKmh } from '../vehicles/planes.js';
+import { PLANE_SPECS, displaySpeedKmh, PLANE_SPEED_SCALE } from '../vehicles/planes.js';
 import { AAGun } from '../vehicles/groundUnits.js';
 import { ShellManager, intersectTanks, clipRayToScenery, barrelIntoWall } from '../combat/ballistics.js';
 import { BulletManager } from '../combat/bullets.js';
@@ -55,7 +55,7 @@ import { CameraShake } from '../combat/shake.js';
 import { heFillerKg, BLAST_KG } from '../combat/blast.js';
 import { TankAI, hasLOS, notifyObjectivesChanged } from '../ai/tankAI.js';
 import { PlaneAI } from '../ai/planeAI.js';
-import { input } from '../core/input.js';
+import { input, actionKeyLabel } from '../core/input.js';
 import {
   sfx,
   sfx3d,
@@ -84,6 +84,8 @@ import { XrayView } from '../ui/xray.js';
 import { opticSteps } from '../ui/hud.js';
 import { clamp, lerp, rand, wrapAngle } from '../core/utils.js';
 import { stationsFor } from '../vehicles/interior/index.js';
+import { gunSightOrigin } from '../vehicles/interior/sight.js';
+import { isRealisticRules, isSimulator, flightModelOf, SIM_HUD, simAAPlanes } from './simRules.js';
 
 // The terrain mesh is +/-1300: it covers the aircraft limit (MAP_EDGE 1200) and
 // both strips, exactly as the air battle's own 2600 mesh does. 277 segments
@@ -215,14 +217,16 @@ const terrainSurface =
 // A fire mission is a fitted module, not a birthright, so the help panel must
 // not advertise a key the vehicle cannot press — a crew that learns T does
 // nothing stops trusting the rest of the list too.
-function tankHelp(spec) {
+function tankHelp(spec, simulator = false) {
   const support = spec && spec.artillerySupport ? 'T — artillery · V — scout' : 'V — scout';
   return `
   <span>W / S — throttle · A / D — steer · Mouse — aim · Shift — sniper</span>
   <span>LMB — fire · Space — machine gun · 1 / 2 / 3 — shell type</span>
-  <span>R (hold) — repair · F — extinguisher · G — smoke · H — first aid</span>
+  <span>R (hold) — repair on / off (2 s) · F — extinguisher · G — smoke · H — first aid</span>
   <span>${support} · M — tactical map · Tab — scoreboard</span>
-  <span>C — crew stations · X — third person · Scroll — hatch (in a station)</span>
+  <span>${simulator
+    ? 'C — crew stations · Shift — gunner sight · RMB — commander: lay the gun on your view'
+    : 'C — crew stations · X — third person'} · Scroll — hatch (in a station)</span>
   <span>E — gunner: sight / look-around (in the gunner's station)</span>
   <span>J (hold) — abandon vehicle · Esc — pause</span>
 `;
@@ -484,7 +488,11 @@ export class CombinedBattle {
     // and every Plane built here has to be handed it or the structural G
     // limiter stays on the arcade setting for both sides.
     this.difficulty = progress.getDifficulty();
-    this.realistic = this.difficulty === 'realistic';
+    // simulator (game/simRules.js): realistic plus first person only (crew
+    // stations / cockpit), a crew's HUD and bots that see as crews do
+    this.realistic = isRealisticRules(this.difficulty);
+    this.simulator = isSimulator(this.difficulty);
+    if (this.simulator) this.cockpit = true;
     this.spectate = false;
     this.stats = new Map(); // scoreboard: name -> { kills, deaths, ... }
     this.bailTimer = 0;
@@ -569,7 +577,7 @@ export class CombinedBattle {
     this._engineOpts = {
       pos: null, rpm: 0, throttle: 0, type: 'tank', moving: false, shift: false,
     };
-    this._matchInfo = { timeLeft: 0, mode: 'Combined Arms', objective: '' };
+    this._matchInfo = { timeLeft: 0, mode: this.simulator ? 'Combined Arms Simulator' : 'Combined Arms', objective: '' };
     this._sniperMarks = [200, 400, 600, 800, 1000].map((R) => ({ px: 0, label: R, range: R }));
     this.spawnTally = {
       kills: 0, assists: 0, groundKills: 0, caps: 0, hits: 0, capTicks: 0,
@@ -703,8 +711,14 @@ export class CombinedBattle {
     // the ammo stack owns the reload bar now, so the old centre bar stands down
     hud.setReloadVisible(false);
     hud.setCrosshairVisible(!this.playerIsPlane);
+    hud.setSimulator?.(this.simulator);
     hud.setHelp(
-      this.playerIsPlane ? PLANE_HELP : tankHelp(this.player && this.player.spec),
+      (this.playerIsPlane
+        ? (this.simulator ? PLANE_HELP.replace('<span>P — cockpit / chase view</span>', '') : PLANE_HELP)
+        : tankHelp(this.player && this.player.spec, this.simulator)) +
+      (this.simulator
+        ? `<span>SIMULATOR: first person only (crew stations / cockpit) · no enemy markers${this.playerIsPlane ? ' · P or MMB (hold) + mouse — look around' : ''}</span>`
+        : ''),
     );
     // switching class must not leave the other class's panel on screen
     hud.setAmmoPanel?.(null);
@@ -786,7 +800,7 @@ export class CombinedBattle {
     const name = isPlayer
       ? `You (${spec.name})`
       : `${team === 0 ? 'Ally' : 'Enemy'} ${spec.name}-${slot + 1}`;
-    const plane = new Plane(this.scene, spec, team, name, isPlayer, this.difficulty);
+    const plane = new Plane(this.scene, spec, team, name, isPlayer, flightModelOf(this.difficulty));
     // Airborne, over their own strip and pointed the way a departing aircraft
     // leaves it — PLANE_SPAWN_BACK outboard of the strip centre (|x| at most
     // 1170, inside MAP_EDGE) and the yaw is the same expression createAirfield()
@@ -1030,7 +1044,7 @@ export class CombinedBattle {
     if (p.alive && this.playerIsPlane && input.pressed('KeyF')) this.fireRocket(p);
 
     for (const g of this.groundUnits) {
-      g.update(dt, this.planes, this.bullets, this._onAAFire);
+      g.update(dt, this.simulator ? simAAPlanes(g, this.planes, dt) : this.planes, this.bullets, this._onAAFire);
     }
 
     // the flyby guard only arms when the manager knows whose rounds are ours
@@ -1230,6 +1244,11 @@ export class CombinedBattle {
     if (!crew.ownsMouse) {
       this.camYaw = wrapAngle(this.camYaw - input.mouseDX * sens);
       this.camPitch = clamp(this.camPitch - input.mouseDY * sens, minPitch, maxPitch);
+    } else if (crew.laying) {
+      // simulator: the commander's aiming command; the gun goes there at its
+      // real traverse rate (TankStations._layCommand)
+      this.camYaw = crew.layYaw;
+      this.camPitch = clamp(crew.layPitch, minPitch, maxPitch);
     }
     if (input.wheel !== 0 && !crew.ownsMouse) {
       if (this.sniper) {
@@ -1347,11 +1366,19 @@ export class CombinedBattle {
     // mouse counts go into the aircraft camera's raw aim; the sensitivity
     // follows the field of view actually on screen, zoomed or not
     const sens = 0.0022 * (this.fov / 60);
-    if (input.mouseDX !== 0 || input.mouseDY !== 0) this.followDelay = 0.9;
+    // simulator: hold P (the VIEW button) or the middle button and the mouse
+    // turns the pilot's head; the instructor keeps flying the last aim
+    const headLook = this.simulator && p.alive && (input.down('KeyP') || input.down('Mouse1'));
+    if (!headLook && (input.mouseDX !== 0 || input.mouseDY !== 0)) this.followDelay = 0.9;
     // A-02: P swaps the chase view and the cockpit; in the cockpit the view
     // banks with the wings, so the mouse is read on the screen
-    if (input.pressed('KeyP')) this.cockpit = !this.cockpit;
-    if (this.cockpit && p.alive && pc.addMouseScreen) pc.addMouseScreen(input.mouseDX, input.mouseDY, sens);
+    // (simulator: the cockpit only — the chase view is gone)
+    if (this.simulator) this.cockpit = true;
+    else if (input.pressed('KeyP')) this.cockpit = !this.cockpit;
+    if (this.simulator) pc.headLook(dt, headLook, input.mouseDX, input.mouseDY, sens);
+    if (headLook) {
+      // (the mouse is the head this frame)
+    } else if (this.cockpit && p.alive && pc.addMouseScreen) pc.addMouseScreen(input.mouseDX, input.mouseDY, sens);
     else pc.addMouse(input.mouseDX, input.mouseDY, sens);
 
     if (input.wheel !== 0 && !this.zoom) {
@@ -1426,6 +1453,16 @@ export class CombinedBattle {
     if (!wpn) return;
     const wantFire = isAA ? input.fireHeld : input.down('Space');
     if (!wantFire) return;
+    // wave 8: coax from its own port beside the gun, hull MG from its ball
+    if (!isAA && typeof p.fireMachineGuns === 'function') {
+      const n = this.fireTankMgs(p, p.aimPoint);
+      if (n && this.usageNow) this.usageNow.stream += n;
+      if (n && p.streamSound <= 0) {
+        p.streamSound = 0.11;
+        this.shake.add(0.045, 0.16);
+      }
+      return;
+    }
     while (p.streamTimer <= 0 && p.streamAmmo > 0) {
       p.streamTimer += 1 / wpn.rof;
       p.streamAmmo--;
@@ -1443,6 +1480,66 @@ export class CombinedBattle {
     }
   }
 
+  // Wave 8: one trigger frame of a tank's machine guns (player or AI) — see
+  // battle.js fireTankMgs. Returns rounds fired.
+  fireTankMgs(t, aimPoint) {
+    const s = t.fireMachineGuns(this.bullets, aimPoint);
+    if (s.coax) {
+      this.effects.mgFlash?.(s.coaxPos, s.coaxDir);
+      sfx3d.mg(s.coaxPos);
+    }
+    if (s.hull) {
+      this.effects.mgFlash?.(s.hullPos, s.hullDir);
+      sfx3d.mg(s.hullPos);
+    }
+    return s.coax + s.hull;
+  }
+
+  // ai/tankAI.js hands its stream fire here (see battle.js requestStream):
+  // MGs from their mounts; the SPAA quad from the main muzzle as before.
+  requestStream(t, aimPoint) {
+    if (!t || !t.alive) return;
+    if (!t.spec.aa && typeof t.fireMachineGuns === 'function') {
+      this.fireTankMgs(t, aimPoint);
+      return;
+    }
+    const wpn = t.spec.aa || t.spec.mg;
+    if (!wpn) return;
+    let fired = 0;
+    while (t.streamTimer <= 0 && t.streamAmmo > 0 && fired < 8) {
+      t.streamTimer += 1 / wpn.rof;
+      t.streamAmmo--;
+      const pos = t.muzzleWorld(tmpV);
+      const dir = t.gunDirection(tmpV2);
+      this.bullets.fire(pos, dir, wpn.speed, wpn.dmg, t, wpn.spread);
+      fired++;
+    }
+    if (fired) {
+      const pos = t.muzzleWorld(tmpV);
+      this.effects.mgFlash?.(pos, t.gunDirection(tmpV2));
+      sfx3d.mg(pos);
+    }
+  }
+
+  // Wave 8: the repair key as a 2 s hold toggle (tankEntity.updateRepairKey):
+  // hold to start a session that runs by itself, hold again to cancel.
+  updateRepairToggle(p, dt, held) {
+    const msg = (t, sev) => this.hud.incomingMessage?.(t, sev);
+    const key = actionKeyLabel('KeyR');
+    const ev = p.updateRepairKey(dt, held);
+    if (ev === 'started') msg(`Repairing ${this.moduleLabel(p.repairTarget)}… (hold ${key} to cancel)`, 'info');
+    else if (ev === 'cancelled') msg('Repair cancelled', 'info');
+    else if (ev === 'nothing') msg('Nothing to repair', 'info');
+    else if (ev === 'moving') msg('Stop the vehicle to repair', 'warn');
+    const end = p.repairSessionEnd;
+    if (end) {
+      p.repairSessionEnd = null;
+      if (end === 'moving') msg('Repair stopped — the vehicle moved', 'warn');
+      else if (end === 'done') msg('Repairs complete', 'info');
+    }
+    this.hud.setRepairHold?.(p.repairHoldFrac, p.repairHoldMode, key);
+  }
+
   // ---------------- tank consumables and support ----------------
   updateTankConsumables(dt) {
     const p = this.player;
@@ -1453,7 +1550,9 @@ export class CombinedBattle {
     // Starting one while rolling would only be cancelled again next frame, so
     // the key says why instead of flickering the repair on and off.
     if (this.repairMsgCd > 0) this.repairMsgCd -= dt;
-    if (input.down('KeyR')) {
+    if (typeof p.updateRepairKey === 'function') {
+      this.updateRepairToggle(p, dt, input.down('KeyR'));
+    } else if (input.down('KeyR')) {
       if (Math.abs(p.speed) > 0.6) {
         if (p.repairing) p.cancelRepair('moving');
         if (this.repairMsgCd <= 0) {
@@ -2231,6 +2330,10 @@ export class CombinedBattle {
       case 'revived':
         hud.incomingMessage?.(`${this.crewName(ev.role)} back in his seat`, 'info', this.showDamageLog);
         break;
+      case 'replenished':
+        // wave 8: a held capture point sent a replacement
+        hud.incomingMessage?.(`New ${this.crewName(ev.role).toLowerCase()} joined the crew`, 'info', true);
+        break;
       default:
         break;
     }
@@ -2507,8 +2610,12 @@ export class CombinedBattle {
       const zone = this.zoneAt(t.position);
       if (!zone || zone.owner !== t.team) {
         t.resupplyT = 0;
+        t.atSupport = false;
         continue;
       }
+      // wave 8: faster repairs on the point's spares, crew replaced
+      // (tankEntity SUPPORT_*)
+      t.atSupport = true;
       t.resupplyT = (t.resupplyT || 0) + dt;
       if (t.resupplyT < 3) continue;
       t.resupplyT -= 3;
@@ -3309,10 +3416,19 @@ export class CombinedBattle {
     this.camera.up.set(0, 1, 0);
     // and the last aeroplane's cockpit layer is not this crew's
     if (this.planeCam.cockpitLayer) this.planeCam.cockpitLayer.setVisible(false);
+    // wave 8: the view chases the raw aim on a stiff spring, so an uneven
+    // mouse count is not a twitch of the whole picture (planeCamera.js)
+    const vs = this.viewSpring || (this.viewSpring = new ViewSpring());
+    if (vs.owner !== p) {
+      vs.owner = p; // a new vehicle is a cut
+      vs.reset(this.camYaw, this.camPitch);
+    }
+    // (through a sight the reticle must stay on the fire ray in a sweep: no trail)
+    vs.update(dt, this.camYaw, this.camPitch, this.sniper ? 1 : 0.5);
     const dir = tmpV.set(
-      Math.sin(this.camYaw) * Math.cos(this.camPitch),
-      Math.sin(this.camPitch),
-      Math.cos(this.camYaw) * Math.cos(this.camPitch),
+      Math.sin(vs.yaw) * Math.cos(vs.pitch),
+      Math.sin(vs.pitch),
+      Math.cos(vs.yaw) * Math.cos(vs.pitch),
     );
 
     let targetFov = 60;
@@ -3347,13 +3463,14 @@ export class CombinedBattle {
       const steps = opticSteps(p.spec);
       this.sniperStep = clamp(this.sniperStep || 0, 0, steps.length - 1);
       targetFov = this.sniperFov = steps[this.sniperStep].fov;
-      const eye = p.turretWorldPos(tmpV2).add(tmpV3.set(0, 0.9, 0));
-      this.camera.position.copy(eye).addScaledVector(dir, 1.2);
+      // the sight's real objective, beside the gun (vehicles/interior/sight.js)
+      const eye = gunSightOrigin(p, tmpV2);
+      this.camera.position.copy(eye);
       this.camera.lookAt(eye.addScaledVector(dir, 100));
     } else {
       const anchor = tmpV2.set(p.position.x, p.position.y + 3.2, p.position.z);
       const pos = tmpV3.copy(anchor).addScaledVector(dir, -this.camDist);
-      pos.y = Math.max(pos.y, terrainHeight(pos.x, pos.z) + 1.4);
+      pos.y = smoothMax(pos.y, terrainHeight(pos.x, pos.z) + 1.4, 1.2);
       this.camera.position.copy(pos);
       this.camera.lookAt(anchor.addScaledVector(dir, 40));
     }
@@ -3478,13 +3595,14 @@ export class CombinedBattle {
     // not on it: a dot on the map is a marker by another name
     const mapUnits = this._mapUnits;
     mapUnits.length = 0;
+    // simulator: own side and the objectives only
     for (const t of this.tanks) {
       if (t.team === 0) mapUnits.push(t);
-      else if ((!this.realistic || t.spotUntil > this.time) && !this.smokeHidden(t)) mapUnits.push(t);
+      else if (!this.simulator && (!this.realistic || t.spotUntil > this.time) && !this.smokeHidden(t)) mapUnits.push(t);
     }
     for (const pl of this.planes) {
       if (pl.team === 0) mapUnits.push(pl);
-      else if ((!this.realistic || pl.spotUntil > this.time) && !this.smokeHidden(pl)) mapUnits.push(pl);
+      else if (!this.simulator && (!this.realistic || pl.spotUntil > this.time) && !this.smokeHidden(pl)) mapUnits.push(pl);
     }
     if (!this._mapZones) {
       this._mapZones = this.zones.map((z) => ({
@@ -3583,7 +3701,8 @@ export class CombinedBattle {
       hud.setPenIndicator(null);
     }
 
-    if (p.alive) {
+    // simulator: the gun marker only in the gunner's sight
+    if (p.alive && (!this.simulator || this.sniper)) {
       const muzzle = p.muzzleWorld(tmpV);
       const gdir = p.gunDirection(tmpV2);
       let dist = Math.max(20, muzzle.distanceTo(p.aimPoint));
@@ -3619,7 +3738,8 @@ export class CombinedBattle {
       const sv = this._scopeView || (this._scopeView = { fov: 60, step: null });
       sv.fov = this.fov;
       sv.step = opticSteps(p.spec)[this.sniperStep || 0] || null;
-      hud.updateScope(marks, Math.round(this.aimDist || 0), (60 / this.fov).toFixed(1), sv);
+      // (simulator: no range readout — the crew judge it on the sight's stadia)
+      hud.updateScope(marks, this.simulator ? 0 : Math.round(this.aimDist || 0), (60 / this.fov).toFixed(1), sv);
       hud.setScopeVisible(true);
     } else {
       hud.setScopeVisible(false);
@@ -3909,7 +4029,7 @@ export class CombinedBattle {
       // (display km/h: planes.js displaySpeedKmh, one scale for every readout)
       d.ias = displaySpeedKmh(s.ias != null ? s.ias : s.speed);
       d.stallSpeed = displaySpeedKmh(s.stallIas != null ? s.stallIas : s.stallSpeed);
-      d.vspeed = s.climb;
+      d.vspeed = s.climb / PLANE_SPEED_SCALE; // the VSI reads design m/s, as the tape reads km/h
       d.fuel = p.spec.fuelCapacity > 0 ? s.fuel : null;
       d.engineTemp = s.engineTemp;
       d.wep = !!s.wep;
@@ -3941,7 +4061,7 @@ export class CombinedBattle {
       d.stress = s.stress;
     } else {
       d.ias = displaySpeedKmh(p.speed);
-      d.vspeed = p.dir.y * p.speed;
+      d.vspeed = (p.dir.y * p.speed) / PLANE_SPEED_SCALE;
       d.fuel = 1;
       d.engineTemp = 0;
       d.wep = !!p.wep;
@@ -4059,6 +4179,11 @@ export class CombinedBattle {
     let visible = dist < (unit.isAircraft ? 1700 : MARK_RANGE * vision);
     // realistic: enemies are only marked once somebody has actually scouted them
     if (this.realistic && unit.team !== p.team) visible = scouted;
+    // simulator: no enemy marks at all, friends tagged only close in
+    if (this.simulator) {
+      visible = unit.team === p.team &&
+        dist < (unit.isAircraft ? SIM_HUD.allyMarkerRangeAir : SIM_HUD.allyMarkerRange);
+    }
     if (visible && !unit.isAircraft && unit.team !== p.team && !scouted) {
       visible = dist < 160 || hasLOS(eye, wp);
     }

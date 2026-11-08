@@ -612,6 +612,42 @@ export function startBench(shell) {
     cancel() {
       cancelled = true;
     },
+    // Wave 8: a sharpness number for the frame the battle is drawing now: the
+    // variance of the Laplacian of luma over a centred crop (rises with fine
+    // detail; jaggies count too, so compare like with like: same tier, same
+    // anti-aliasing, grain and motion blur off). Draws one frame of its own.
+    sharpness(cropW = 768, cropH = 512) {
+      let out = null;
+      const prev = shell.hooks.afterRender;
+      shell.hooks.afterRender = () => {
+        const W = gl.drawingBufferWidth;
+        const H = gl.drawingBufferHeight;
+        const w = Math.min(cropW, W);
+        const h = Math.min(cropH, H);
+        const px = new Uint8Array(w * h * 4);
+        gl.readPixels((W - w) >> 1, (H - h) >> 1, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        const L = (i) => 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        let s = 0;
+        let s2 = 0;
+        let n = 0;
+        for (let y = 1; y < h - 1; y++) {
+          for (let x = 1; x < w - 1; x++) {
+            const i = (y * w + x) * 4;
+            const lap = 4 * L(i) - L(i - 4) - L(i + 4) - L(i - w * 4) - L(i + w * 4);
+            s += lap;
+            s2 += lap * lap;
+            n++;
+          }
+        }
+        out = { lapVar: +(s2 / n - (s / n) ** 2).toFixed(1), canvas: [W, H], scale: shell.postfx ? shell.postfx.renderScale : 1 };
+      };
+      try {
+        shell.frame(DT);
+      } finally {
+        shell.hooks.afterRender = prev;
+      }
+      return out;
+    },
   };
   window.__bench = api;
 

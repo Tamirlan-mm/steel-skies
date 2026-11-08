@@ -201,6 +201,8 @@ export default defineTankInterior('tiger', (spec, base) => {
       caseLength: 0.571,
     },
     layout: {
+      // the steering wheel the driver's hands hold (crew.js); its rim is in extras
+      driverWheel: { pos: [drv[0], 1.34, 2.12], r: 0.18 },
       hull: { glacisTopZ, frontZ, lowFrontY },
       // inside the horseshoe: 100 mm front, 80 mm sides; the 1.85 m ring; the
       // platform 1.57 m below the roof

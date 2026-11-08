@@ -27,12 +27,14 @@ import { gunnerPeriscope } from './stations.js';
 //   - driver + assistant driver on the visor slits in their hoods (the hoods
 //     sit 0.30 m either side of the centreline on the outside model), seats
 //     moved forward behind the hoods, a narrower gearbox between them;
-//   - no assistant-driver STATION: the damage model's 4-man tank has no
-//     hull gunner (combat/internals.js CREW_ORDER crews driver, gunner,
-//     commander, loader), and a station without a crewman could never be
-//     knocked out. His seat, visor and controls are drawn as fixtures;
-//   - the 'loader' station is the right-hand turret man at the breech
-//     (historically the commander loaded; no seat of its own);
+//   - the stations follow the real four men (wave 8): commander (who loads),
+//     driver, assistant driver ('radio' station), gunner; no loader. The damage
+//     model (combat/internals.js CREW_ORDER) still lays out driver, gunner,
+//     commander, loader on any four-man tank, so its fourth box stands for the
+//     assistant driver here (crewAliveKey): he can be knocked out, by a hit on
+//     a box that is not where he sits, until that file learns per-tank seats;
+//   - the commander's figure works at the breech when the player is elsewhere
+//     (`loads`, `figEye`: right of the gun; crew.js);
 //   - gunner left with the M4 periscope sight; breech: 37 mm M6 vertical
 //     sliding wedge (semi-automatic), the 37 x 223 mm R case;
 //   - racks: 103-ish rounds in four sponson bins and two floor bins, inside
@@ -67,9 +69,6 @@ export default defineTankInterior('stuart', (spec, base) => {
 
   // ---- the commander loading: right of the breech, looking at it
   const ldEye = [-0.38, 0.3, 0.0];
-  const brZ = gunZ - 0.24; // breech ring centre, turret frame
-  const ldYaw = Math.atan2(0 - ldEye[0], brZ - ldEye[2]);
-  const ldPitch = Math.atan2(gunY - 0.1 - ldEye[1], Math.hypot(ldEye[0], brZ - ldEye[2]));
 
   // ---- ammunition: bins inside the damage model's ammo boxes
   const side = base.layout.racks.find((r) => r.face === 'nx' || r.face === 'px');
@@ -102,9 +101,14 @@ export default defineTankInterior('stuart', (spec, base) => {
   const mgX = spec.hull.w / 2 - 0.22;
 
   return {
+    crewRoles: ['driver', 'gunner', 'commander', 'radio'],
+    crewAliveKey: { radio: 'loader' },
+    stationLabels: { commander: 'COMMANDER / LOADER' },
     stations: {
       commander: {
         frame: 'turret',
+        loads: true,
+        figEye: ldEye,
         // head up in the hexagonal cupola; the slots face the six sides of
         // the outside model's drum (tanks.js: blocks at i/6 turns, phase 0)
         eye: [cu.x, blockY, cu.z],
@@ -122,14 +126,17 @@ export default defineTankInterior('stuart', (spec, base) => {
         // him: its unity window is his look-out (wave 7)
         vision: gunnerPeriscope(spec, [0.3, 0.34, 0.16], { yaw: [-0.3, 0.3], drop: 0.2 }),
       },
-      loader: {
-        frame: 'turret',
-        eye: ldEye,
-        look: [ldYaw, ldPitch],
-        device: { type: 'none' },
-        // the cupola is the turret's only hatch: none from here
-        hatch: null,
-        seat: null,
+      loader: null,
+      // the assistant driver: the right-hand hood's visor and his roof hatch
+      radio: {
+        frame: 'hull',
+        eye: [-dX, visorY, eyeZ],
+        look: [0, 0],
+        device: slit,
+        limits: { yaw: [-0.4, 0.4], pitch: [-0.12, 0.12] },
+        fov: 55,
+        hatch: { eye: [-dX, roof + 0.6, 1.62] },
+        seat: hullSeat(-dX),
       },
       driver: {
         frame: 'hull',
@@ -168,10 +175,6 @@ export default defineTankInterior('stuart', (spec, base) => {
         // the fixed .30 sponson guns' receivers either side of the front plate
         { frame: 'hull', pos: [mgX, mgY, 1.72], size: [0.09, 0.11, 0.42], color: 0x2a2b28 },
         { frame: 'hull', pos: [-mgX, mgY, 1.72], size: [0.09, 0.11, 0.42], color: 0x2a2b28 },
-        // the assistant driver's seat and his closed visor (no station)
-        { frame: 'hull', pos: [-dX, 0.88, 1.66], size: [0.4, 0.07, 0.38], color: 0x4b3b2c },
-        { frame: 'hull', pos: [-dX, 1.14, 1.46], size: [0.38, 0.46, 0.06], color: 0x4b3b2c },
-        { frame: 'hull', pos: [-dX, visorY, 2.1], size: [0.24, 0.07, 0.03], color: 0x1c1d1b },
         // the visor doors' hinges/latches above each slit
         { frame: 'hull', pos: [dX, visorY + 0.09, 2.08], size: [0.3, 0.03, 0.05] },
         { frame: 'hull', pos: [-dX, visorY + 0.09, 2.08], size: [0.3, 0.03, 0.05] },

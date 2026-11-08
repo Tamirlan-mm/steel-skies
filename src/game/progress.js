@@ -1,6 +1,7 @@
 import { TANK_SPECS } from '../vehicles/tanks.js';
 import { PLANE_SPECS } from '../vehicles/planes.js';
 import { brOf, vehicleKind, matchmake } from './battleRating.js';
+import { normDifficulty } from './simRules.js';
 
 // Player progression: an economy rather than a score counter.
 //
@@ -124,7 +125,7 @@ const DEFAULTS = {
   owned: ['stuart', 'zero'],
   selected: { ground: 'stuart', air: 'zero' },
   battleMode: 'ground',
-  difficulty: 'arcade', // 'arcade' | 'realistic'
+  difficulty: 'arcade', // 'arcade' | 'realistic' | 'simulator' (game/simRules.js)
   mods: {}, // vehicleId -> array of owned mod ids
   loadout: {}, // planeId -> 'clean' | 'bombs' | 'rockets'
   ammoLoadout: {}, // tankId -> { AP: n, ... }
@@ -188,6 +189,9 @@ export function rewardMultiplier(spec) {
 export const DIFFICULTY_MULT = {
   arcade: { silver: 1.0, rp: 1.0, repair: 1.0 },
   realistic: { silver: 1.55, rp: 1.5, repair: 1.35 },
+  // Simulator (game/simRules.js): realistic's bill, a little more pay for
+  // fighting from inside the hull with no markers
+  simulator: { silver: 1.7, rp: 1.65, repair: 1.35 },
 };
 
 // A destroyed vehicle is billed by tier and Battle Rating together: tier says
@@ -390,11 +394,14 @@ export const progress = {
   },
 
   getDifficulty() {
-    return this.data.difficulty || 'arcade';
+    return normDifficulty(this.data.difficulty);
   },
 
   setDifficulty(v) {
-    this.data.difficulty = v;
+    this.data.difficulty = normDifficulty(v);
+    // mirrored into settings so the settings blob carries the whole battle
+    // setup (the top-level field stays the one read, for old saves)
+    if (this.data.settings) this.data.settings.difficulty = this.data.difficulty;
     this.save();
   },
 

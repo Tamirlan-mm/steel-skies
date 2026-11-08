@@ -6,6 +6,8 @@ import { propBlocksLine, solidPushOut } from '../world/scenery.js';
 import { shellPenAt } from '../vehicles/tanks.js';
 import { sfx3d } from '../core/audio.js';
 import { clamp, wrapAngle, rand } from '../core/utils.js';
+// SIMULATOR bot vision (battle.simulator): detection, recognition, memory
+import { BotVision, SIM_VISION, tankDetectMult, simAimMult, simBracketMult } from '../game/simRules.js';
 
 const { terrainHeight } = terrain;
 
@@ -616,10 +618,26 @@ export class TankAI {
   // One pass over the enemy: what we would rather shoot, and who is the most
   // dangerous thing looking back at us. They are usually not the same vehicle,
   // and the difference is what the hull gets angled against.
+  // SIMULATOR (game/simRules.js): this crew's eyes, or null outside simulator
+  // (arcade / realistic never build one, so their behaviour is untouched)
+  simVision() {
+    if (!this.battle || !this.battle.simulator) return null;
+    return this._vision || (this._vision = new BotVision('tank'));
+  }
+
   acquire() {
     const t = this.tank;
     const eye = this.eyePos(tmpA);
     const smoke = this.battle.effects;
+    // simulator: a target in line of sight still has to be picked out
+    // (BotVision.observe) and recognised before it is engaged
+    const vis = this.simVision();
+    let sweepDt = 0;
+    if (vis) {
+      sweepDt = this._visAt == null ? 0.7 : vis.clock - this._visAt;
+      this._visAt = vis.clock;
+      vis.beginSweep();
+    }
     let best = null;
     let bestScore = Infinity;
     let threat = null;
@@ -645,9 +663,30 @@ export class TankAI {
       if (!hasLOS(eye, tmpV)) continue;
       if (smokeBlinds(smoke, eye, tmpV)) continue;
       if (wallBetween(eye, tmpV)) continue;
+      let known = true;
+      // (SIM_VISION.tank.playerOnly: bot against bot stays at realistic pace)
+      if (vis && (other.isPlayer || !SIM_VISION.tank.playerOnly)) {
+        // seen only through trees or a hedge: a fraction of the chance
+        let foliage = false;
+        try {
+          foliage = propBlocksLine(eye, tmpV, true);
+        } catch (err) {
+          foliage = false;
+        }
+        const m = tankDetectMult(other, this.battle.time || 0, {
+          foliage, smokeVeil: smokeVeil(smoke, eye, tmpV), attacker: other === t.lastAttacker,
+          // where the crew are looking: the gun's line against the bearing
+          arc: d > 1 ? (Math.sin(t.yaw + t.turretYaw) * (other.position.x - t.position.x) +
+            Math.cos(t.yaw + t.turretYaw) * (other.position.z - t.position.z)) / d : 1,
+        });
+        if (!vis.observe(other, d, m, sweepDt)) continue; // not picked out yet
+        known = vis.knows(other); // recognised: may be engaged
+      }
 
       let score = d;
-      if (other.isPlayer) score -= 60;
+      if (!known) score += 1e6; // a contact still being made out is not a target
+      // (simulator: a crew cannot tell which hull has the human in it)
+      if (other.isPlayer && !vis) score -= 60;
       if (other === t.lastAttacker) score -= 90;
       // a target this gun cannot beat is a poor use of a reload
       if (!this.wouldPenetrate(other, d)) score += 200;
@@ -662,7 +701,7 @@ export class TankAI {
 
       // threat: everything that can see us is a threat, and the one that can
       // do it soonest is the one to keep the glacis pointed at
-      const ts = d - (other.isPlayer ? 40 : 0) - (other === t.lastAttacker ? 120 : 0);
+      const ts = d - (other.isPlayer && !vis ? 40 : 0) - (other === t.lastAttacker ? 120 : 0);
       if (ts < threatScore) {
         threatScore = ts;
         threat = other;
@@ -672,14 +711,31 @@ export class TankAI {
     // A target that has just vanished into smoke is not dropped on this
     // sweep if nothing else is in sight: the crew keep the gun on the spot he
     // went in for SMOKE_MEMORY (updateSight counts it) — remembered, not seen.
-    const remembered = !best && this.target && this.target.alive &&
+    if (vis && best && bestScore >= 1e5) best = null; // only unrecognised contacts
+    let remembered = !best && this.target && this.target.alive &&
       this.smokeBlind && this.sightOf === this.target && this.blindFor < SMOKE_MEMORY;
+    // simulator: a target that has just broken line of sight is held for
+    // SIM_VISION.tank.lose seconds — the gun on where he was last seen, no
+    // fire, no tracking of where he really is — then given up
+    this.simBlind = false;
+    if (vis) {
+      vis.endSweep();
+      if (!best && !remembered && this.target && this.target.alive && vis.detected(this.target)) {
+        remembered = true;
+        this.simBlind = true;
+      }
+    }
     if (remembered) best = this.target;
     if (best !== this.target) {
       this.target = best;
       this.reactionTimer = rand(0.4, 0.9);
       this.errTimer = 0;
       this.stopHold = 0;
+      // simulator: the new target has to be ranged in and the gun laid on him
+      if (vis) {
+        this.simRounds = 0;
+        if (best && best.isPlayer) this.reactionTimer += rand(SIM_VISION.tank.layDelay[0], SIM_VISION.tank.layDelay[1]);
+      }
     }
     // everything that survived that loop was in sight when we looked
     this.losTarget = !!best && !remembered;
@@ -687,7 +743,7 @@ export class TankAI {
     // everything in that loop already had line of sight to our turret, and
     // line of sight is symmetric
     this.threatSeen = !!threat;
-    if (this.isSPAA) this.acquireAir();
+    if (this.isSPAA) this.acquireAir(sweepDt);
     if (surfaceAt) {
       const s = surfaceAt(t.position.x, t.position.z);
       this.grip = s && typeof s.grip === 'number' ? clamp(s.grip, 0.3, 1.4) : 1;
@@ -696,13 +752,21 @@ export class TankAI {
 
   // Aircraft only matter to a vehicle that can reach them, so only the SPAA
   // pays for this loop — and only in a battle that has aeroplanes in it.
-  acquireAir() {
+  acquireAir(sweepDt = 0.7) {
     this.airTarget = null;
     const list = this.battle.planes;
     if (!Array.isArray(list) || list.length === 0) return;
     const t = this.tank;
     const smoke = this.battle.effects;
     const eye = this.eyePos(tmpB);
+    // simulator: the crew have to see the aeroplane (over the terrain) and
+    // make it out before the quad swings onto it
+    let av = null;
+    if (this.battle.simulator) {
+      av = this._airVision || (this._airVision = new BotVision('air'));
+      av.clock = this._vision ? this._vision.clock : av.clock + sweepDt;
+      av.beginSweep();
+    }
     let best = null;
     let bestD = Infinity;
     for (const pl of list) {
@@ -711,11 +775,16 @@ export class TankAI {
       if (d > 900) continue;
       // a low aeroplane behind the screen is no more visible than a tank
       if (smokeBlinds(smoke, eye, pl.position)) continue;
+      if (av && (pl.isPlayer || !SIM_VISION.air.playerOnly)) {
+        if (!hasLOS(eye, pl.position)) continue;
+        if (!av.observe(pl, d, pl.firing ? 1.2 : 0.8, sweepDt) || !av.knows(pl)) continue;
+      }
       if (d < bestD) {
         bestD = d;
         best = pl;
       }
     }
+    if (av) av.endSweep();
     this.airTarget = best;
   }
 
@@ -1142,6 +1211,12 @@ export class TankAI {
       // was last seen — nothing tracks the hull itself through the cloud —
       // until the crew give him up (update() drops him after SMOKE_MEMORY).
       if (this.smokeBlind && this.target) return;
+      if (this.simBlind && this.target && this._vision &&
+        this._vision.lastKnown(this.target, tmpA)) {
+        tmpA.y += 1.2;
+        t.aimPoint.copy(tmpA);
+        return;
+      }
       // rest the gun forward while cruising
       const f = t.forwardDir(tmpA).multiplyScalar(60).add(t.position);
       f.y += 2;
@@ -1169,7 +1244,10 @@ export class TankAI {
       this.errTimer = rand(0.6, 1.1);
       // a thin veil of smoke on the line costs the gunner his fine lay
       const err = this.aimError * dist * (1 + Math.abs(target.speed) * 0.06) *
-        (t.crewAlive.gunner > 0 ? 1 : 1.9) * (1 + SMOKE_AIM_ERR * this.smokeVeil);
+        (t.crewAlive.gunner > 0 ? 1 : 1.9) * (1 + SMOKE_AIM_ERR * this.smokeVeil) *
+        // simulator: wider at range, and the first rounds at a target range in
+        (this._vision && (target.isPlayer || !SIM_VISION.tank.playerOnly)
+          ? simAimMult(dist) * simBracketMult(this.simRounds || 0) : 1);
       this.aimErr.set(rand(-err, err), rand(-err, err) * 0.5, rand(-err, err));
     }
     t.aimPoint.copy(this.aimWorld).add(this.aimErr);
@@ -1190,7 +1268,13 @@ export class TankAI {
       && !wallBetween(eye, tmpD) && !wallBetween(t.muzzleWorld ? t.muzzleWorld(tmpB) : eye, tmpD);
     if (!this.losTarget) return;
     if (this.friendlyInLine(target)) return;
+    const reload0 = t.reload;
     this.battle.requestFire(t);
+    // simulator: a round gone, the next is laid from where this one fell
+    if (this._vision && t.reload !== reload0) {
+      this.simRounds = (this.simRounds || 0) + 1;
+      this.errTimer = 0;
+    }
   }
 
   // Lay the quad on an aeroplane: lead it by the time of flight and let the
@@ -1735,6 +1819,7 @@ export class TankAI {
     if (!t.alive) return;
 
     this.retargetTimer -= dt;
+    if (this._vision) this._vision.tick(dt);
     if (this.reactionTimer > 0) this.reactionTimer -= dt;
     if (this.aidCd > 0) this.aidCd -= dt;
     if (this.smokeCd > 0) this.smokeCd -= dt;
@@ -1763,6 +1848,9 @@ export class TankAI {
       }
       target = null;
     }
+    // simulator: out of sight is out of mind — the gun stays on the last
+    // seen spot (updateGun) and the hull goes back to its objective
+    if (target && this.simBlind) target = null;
     const dist = target ? t.position.distanceTo(target.position) : Infinity;
 
     this.refreshObjective();

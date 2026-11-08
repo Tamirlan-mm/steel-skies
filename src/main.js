@@ -6,7 +6,7 @@ import {
   initAudio, updateEngineSound, setVolumes, resetAudio,
 } from './core/audio.js';
 import { setMaterialRenderer, setMaterialQuality, getMaterialQuality } from './core/materials.js';
-import { createPostFX, postFXQualityFor, createFramePacer, gpuNameOf, compileQuietly } from './core/postfx.js';
+import { createPostFX, postFXQualityFor, createFramePacer, gpuNameOf, compileQuietly, RENDER_SCALE_FLOOR } from './core/postfx.js';
 import { activePreset } from './world/presets.js';
 import { warmEnvironment } from './world/scenery.js';
 import { HUD } from './ui/hud.js';
@@ -21,7 +21,10 @@ import { ownedMods } from './game/mods.js';
 import { vehicleKind, brLabel, brOf } from './game/battleRating.js';
 import { SPEC_INDEX, CREW_SKILLS, CREW_MAX_LEVEL, CREW_QUALS } from './game/progress.js';
 import { MOD_DEFS } from './game/mods.js';
-import { initTelemetry, logEvent, setLogContext, setLogRenderer, watchContext, toggleLogPanel } from './core/telemetry.js';
+import {
+  initTelemetry, logEvent, setLogContext, setLogRenderer, watchContext, toggleLogPanel,
+  reportFrame, watchCamera, resetCameraWatch,
+} from './core/telemetry.js';
 
 // Diagnostics log (F8 / #logs): errors, hitches and perf samples for bug reports.
 initTelemetry();
@@ -62,8 +65,13 @@ const overlay = document.getElementById('overlay');
 const TOUCH_DEVICE = detectTouch();
 const PHONE = TOUCH_DEVICE && touchDeviceClass() === 'phone';
 if (PHONE) setAssetTier(512);
-const renderer = new THREE.WebGLRenderer({ antialias: !PHONE });
+// (wave 8: on a laptop with two GPUs, ask for the fast one)
+const renderer = new THREE.WebGLRenderer({ antialias: !PHONE, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, TOUCH_DEVICE ? 1.5 : 2));
+// wave 8: renderer.info counts the whole FRAME (every composer pass), reset
+// once at the top of frame(); with three's autoReset each render() call wiped
+// it, so the telemetry read the last full-screen quad (1 call, 1 triangle)
+renderer.info.autoReset = false;
 watchContext(renderer.domElement);
 // read lazily at sample time: postfx is created later, per battle
 setLogRenderer(renderer, () => ({
@@ -292,7 +300,7 @@ function requestLock() {
 #overlay .setRow input { width: 100%; accent-color: #f0c040; }
 #overlay .setRow .val { text-align: right; color: #dfe6ef; font-variant-numeric: tabular-nums; }
 #overlay .gfxRow { grid-template-columns: 156px 1fr; }
-#overlay .gfxBtns { display: flex; gap: 6px; }
+#overlay .gfxBtns { display: flex; flex-wrap: wrap; gap: 6px; }
 #overlay .gfxBtns button {
   flex: 1; padding: 7px 4px; font-size: 11px; letter-spacing: 2px;
 }
@@ -349,7 +357,11 @@ const GFX_KEY = 'steelSkies.graphics';
 function defaultGraphics() {
   if (TOUCH_DEVICE) return 'low'; // mobile lane: phones and tablets start low
   try {
-    return postFXQualityFor({ gpu: gpuNameOf(renderer) });
+    // wave 8: the canvas counts too (at full resolution, whatever a low tier
+    // has done to the pixel ratio)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const pixels = window.innerWidth * window.innerHeight * dpr * dpr;
+    return postFXQualityFor({ gpu: gpuNameOf(renderer), pixels });
   } catch (e) {
     return 'medium';
   }
@@ -455,13 +467,21 @@ function ensurePostFX() {
         // tier holds ~12 ms on an integrated GPU at 1080p (the HUD is DOM and
         // never scaled). Off in the hangar, which builds its own chain.
         aoScale: 0.5,
-        autoScale: readRenderFloor() < 1,
-        targetMs: { high: 12, medium: 8, low: 5 },
-        // and the slow tail (p90) under the p95 budgets: 16 / 9 / 6 ms
-        tailMs: { high: 14.5, medium: 8.4, low: 5.5 },
-        minScale: readRenderFloor(),
+        autoScale: renderScaleChoice() === 'auto',
+        // wave 8: the GPU budget of a 60 Hz frame (the GPU runs beside the
+        // main thread, not after it). The old 12 / 8 / 5 ms sent every tier to
+        // its floor at 1440p, well above 60 fps' need and at the cost of the
+        // picture; p90 likewise.
+        // (low has no upscale filter and is what AUTO gives an integrated GPU at
+        // 1440p, where it costs 11.7 / 13.8 ms at full resolution: it stays there)
+        targetMs: { high: 14, medium: 14, low: 13.5 },
+        tailMs: { high: 16.5, medium: 16.5, low: 16 },
+        minScale: renderScaleFloors(),
+        // cheaper AA and AO before any resolution is given up
+        bigCanvas: 2.4e6,
       });
       postfx.setLens?.(lensWanted);
+      applyRenderScale();
     } catch (e) {
       postfx = null;
       postfxDead = true;
@@ -691,38 +711,66 @@ garage.graphicsApi = {
   current: () => gfxWanted || readGraphics(),
   auto: () => defaultGraphics(),
   set: (level) => setGraphics(level),
-  // P-04: the hangar's RENDER SCALE row is the lowest resolution share the
-  // battle's dynamic resolution may drop to; 100 % pins full resolution.
-  getRenderScale: () => readRenderFloor(),
-  setRenderScale: (v) => writeRenderFloor(v),
+  // wave 8: the hangar's RENDER SCALE slider pins a fixed share of the canvas
+  // resolution (100 % = every pixel, always). AUTO — the default, dynamic
+  // resolution above the tier's floor (RENDER_SCALE_FLOOR) — is what the slider
+  // shows as its floor until it is moved, and comes back through
+  // setRenderScaleChoice('auto') and the pause screen's RENDER SCALE row.
+  getRenderScale: () => {
+    const c = renderScaleChoice();
+    return c === 'auto' ? renderScaleFloors()[gfxWanted || readGraphics()] || 1 : c;
+  },
+  setRenderScale: (v) => setRenderScaleChoice(v),
+  renderScaleChoice: () => renderScaleChoice(),
+  setRenderScaleChoice: (v) => setRenderScaleChoice(v),
 };
 
-// ---------- P-04 render-scale floor ----------
-// Per browser (localStorage): it is about this machine's GPU, not the save.
-const RSCALE_KEY = 'steelSkies.renderScaleFloor';
-const RSCALE_DEFAULT = 0.6;
-function readRenderFloor() {
-  let v = NaN;
+// ---------- wave 8 render scale ----------
+// 'auto' (default) or a pinned share of the canvas resolution, 0.5..1. Per
+// browser (localStorage): it is about this machine's GPU, not the save.
+// A touch device keeps the old, lower floor: its canvas is small and its
+// GPU smaller, and it has no bicubic upscale on the low tier.
+const RSCALE_KEY = 'steelSkies.renderScale';
+const RSCALE_OLD_KEY = 'steelSkies.renderScaleFloor'; // P-04: a floor; 1 meant "full"
+function renderScaleChoice() {
   try {
-    v = parseFloat(window.localStorage?.getItem(RSCALE_KEY));
+    const v = window.localStorage?.getItem(RSCALE_KEY);
+    if (v === 'auto') return 'auto';
+    const n = parseFloat(v);
+    if (Number.isFinite(n)) return Math.min(1, Math.max(0.5, n));
+    if (parseFloat(window.localStorage?.getItem(RSCALE_OLD_KEY)) >= 1) return 1;
   } catch (e) {
     /* blocked storage: the default */
   }
-  return Number.isFinite(v) ? Math.min(1, Math.max(0.5, v)) : RSCALE_DEFAULT;
+  return 'auto';
 }
-function writeRenderFloor(v) {
-  const f = Math.min(1, Math.max(0.5, Math.round(Number(v) * 20) / 20 || RSCALE_DEFAULT));
+function setRenderScaleChoice(v) {
+  const c = v === 'auto' ? 'auto' : Math.min(1, Math.max(0.5, Math.round(Number(v) * 20) / 20 || 1));
   try {
-    window.localStorage?.setItem(RSCALE_KEY, String(f));
+    window.localStorage?.setItem(RSCALE_KEY, String(c));
   } catch (e) {
     /* this session only */
   }
-  postfx?.setAutoScale?.({ enabled: f < 1, minScale: f });
-  return f;
+  applyRenderScale(c);
+  return c;
+}
+function renderScaleFloors() {
+  return TOUCH_DEVICE ? { high: 0.6, medium: 0.6, low: 0.5 } : { ...RENDER_SCALE_FLOOR };
+}
+function applyRenderScale(c = renderScaleChoice()) {
+  if (!postfx) return;
+  if (c === 'auto') {
+    postfx.setAutoScale?.({ enabled: true, minScale: renderScaleFloors() });
+  } else {
+    postfx.setAutoScale?.({ enabled: false });
+    postfx.setRenderScale?.(c);
+  }
 }
 
+let battleSerial = 0;
 function startBattle(battleMode, vehicleType, specId) {
-  setLogContext({ mode: battleMode, vehicle: specId, graphics: readGraphics() });
+  battleSerial++;
+  setLogContext({ mode: battleMode, vehicle: specId, graphics: readGraphics(), battle: battleSerial });
   logEvent('event', 'battle start', { mode: battleMode, vehicle: specId, type: vehicleType, graphics: readGraphics() });
   if (battle) {
     battle.dispose();
@@ -1366,10 +1414,24 @@ function graphicsPanel() {
           ${btn('auto', 'AUTO')}${btn('low', 'LOW')}${btn('medium', 'MEDIUM')}${btn('high', 'HIGH')}
         </div>
       </div>
+      <div class="setRow gfxRow">
+        <label>RENDER SCALE</label>
+        <div class="gfxBtns">${renderScaleButtons()}</div>
+      </div>
       <div class="rsSub">${detail}<br>
       Texture detail changes when the next battle loads — regenerating it now
-      would stall this one.</div>
+      would stall this one. Render scale AUTO lowers the resolution only as far
+      as the tier's floor when the frame rate needs it; 100% keeps every pixel.</div>
     </div>`;
+}
+
+const RSCALE_STEPS = ['auto', 1, 0.85, 0.7];
+function renderScaleButtons() {
+  const c = renderScaleChoice();
+  return RSCALE_STEPS.map((v) => {
+    const label = v === 'auto' ? 'AUTO' : `${Math.round(v * 100)}%`;
+    return `<button data-rscale="${v}"${c === v ? ' class="on"' : ''}>${label}</button>`;
+  }).join('');
 }
 
 // The sliders live in three places (garage, pause, and whatever comes next), so
@@ -1383,6 +1445,15 @@ function bindSettingsSliders(root) {
       const out = root.querySelector(`[data-val="${key}"]`);
       if (out) out.textContent = `${Math.round((parseFloat(el.value) / max) * 100)}%`;
       applySettings();
+    });
+  });
+  root.querySelectorAll('button[data-rscale]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const v = el.dataset.rscale;
+      const c = setRenderScaleChoice(v === 'auto' ? 'auto' : parseFloat(v));
+      root.querySelectorAll('button[data-rscale]').forEach((b) => {
+        b.classList.toggle('on', b.dataset.rscale === String(c));
+      });
     });
   });
   root.querySelectorAll('[data-gfx]').forEach((el) => {
@@ -1562,7 +1633,13 @@ function warmShaders(b) {
       renderer.setRenderTarget(prevRT);
     }
     const chainPrograms = fx && fx.warmUp ? fx.warmUp() : null;
-    Promise.all([scenePrograms, chainPrograms]).then(done, done);
+    // wave 8: then the battle's textures, in slices. Left to the first frame
+    // they were the 0.7-2.3 s freeze at the start of every battle (133
+    // textures uploaded inside one draw, Iris Xe at 1440p; telemetry: first
+    // frames of 1576 / 1667 ms on the player's own machine)
+    Promise.all([scenePrograms, chainPrograms])
+      .then(() => preloadTextures(b, () => shaderWarm.battle === b))
+      .then(done, done);
   } catch (e) {
     done();
     return;
@@ -1586,6 +1663,52 @@ function warmShaders(b) {
     }
     el.style.display = 'block';
   }, 600);
+}
+const TEX_SLOTS = [
+  'map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap', 'bumpMap', 'alphaMap',
+  'lightMap', 'displacementMap', 'specularMap', 'clearcoatMap', 'clearcoatNormalMap', 'clearcoatRoughnessMap',
+];
+function preloadTextures(b, stillWanted) {
+  const seen = new Set();
+  const add = (t) => {
+    // only a texture that is ready and has never been uploaded: a canvas or an
+    // image in hand, not a render target's, not one still loading
+    if (!t || !t.isTexture || t.isRenderTargetTexture || t.isDepthTexture || t.isCubeTexture) return;
+    const im = t.image;
+    if (!im || t.version === 0 || im.complete === false) return;
+    seen.add(t);
+  };
+  const addMat = (m) => {
+    for (const k of TEX_SLOTS) add(m[k]);
+    if (m.uniforms) for (const k in m.uniforms) add(m.uniforms[k] && m.uniforms[k].value);
+  };
+  b.scene.traverse((o) => {
+    const m = o.material;
+    if (!m) return;
+    if (Array.isArray(m)) m.forEach(addMat);
+    else addMat(m);
+  });
+  const list = [...seen];
+  return new Promise((resolve) => {
+    let i = 0;
+    const slice = () => {
+      if (!stillWanted() || i >= list.length) {
+        resolve();
+        return;
+      }
+      const t0 = performance.now();
+      while (i < list.length && performance.now() - t0 < 12) {
+        try {
+          renderer.initTexture(list[i]);
+        } catch (e) {
+          /* the first frame gets another go at it */
+        }
+        i++;
+      }
+      setTimeout(slice, 0);
+    };
+    slice();
+  });
 }
 function shadersWarming() {
   return !!battle && shaderWarm.battle === battle && !externalDriver;
@@ -1623,11 +1746,35 @@ function watchFrameRate(live) {
   // cap such as a 30 fps energy saver, no GPU timer), or its GPU timer says
   // the chain is well inside budget at full resolution.
   const st = postfx?.autoScaleState;
-  if (st && (st.capped || (st.timer && st.scale >= 1 && st.ema < st.target * 0.8))) return;
+  if (st && (st.capped || (st.timerLive && st.scale >= 1 && st.ema < st.target * 0.8))) return;
   perfWatch.shown = true;
+  if (lowerGraphicsOnce()) return;
   showPerfToast(gfxWanted === 'high' ? 'MEDIUM' : 'LOW');
 }
-function showPerfToast(lower) {
+// Wave 8: a stored tier this machine and monitor cannot run. Many of these were
+// never chosen for this screen: they came from an older build's guess, or a
+// smaller monitor (telemetry: 20 fps for 30 minutes at 1440p on Iris Xe). Measured
+// over ten seconds of real play, only when AUTO would pick lower, and once per
+// browser: the choice becomes AUTO, the player is told, and a tier they pick after
+// that is theirs for good.
+const GFX_LOWERED_KEY = 'steelSkies.graphicsLoweredOnce';
+function lowerGraphicsOnce() {
+  try {
+    const c = graphicsChoice();
+    if (gfxOverride || c === 'auto' || !window.localStorage) return false;
+    if (window.localStorage.getItem(GFX_LOWERED_KEY)) return false;
+    const auto = defaultGraphics();
+    if (GFX_LEVELS.indexOf(auto) >= GFX_LEVELS.indexOf(c)) return false;
+    window.localStorage.setItem(GFX_LOWERED_KEY, `${c}>${auto}`);
+    logEvent('event', 'graphics lowered once', { from: c, to: auto });
+    setGraphics('auto');
+    showPerfToast(auto.toUpperCase(), true);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function showPerfToast(lower, done = false) {
   if (typeof document === 'undefined') return;
   let el = perfWatch.el;
   if (!el) {
@@ -1644,7 +1791,9 @@ function showPerfToast(lower) {
     document.body.appendChild(el);
     perfWatch.el = el;
   }
-  el.textContent = `LOW FRAME RATE · TRY GRAPHICS QUALITY ${lower} (ESC › GRAPHICS)`;
+  el.textContent = done
+    ? `LOW FRAME RATE · GRAPHICS SET TO AUTO: ${lower} (ESC › GRAPHICS TO CHANGE)`
+    : `LOW FRAME RATE · TRY GRAPHICS QUALITY ${lower} (ESC › GRAPHICS)`;
   el.style.display = 'block';
   clearTimeout(perfWatch.timer);
   perfWatch.timer = setTimeout(() => {
@@ -1669,10 +1818,104 @@ function loop(ts) {
     pacer.reset();
     return;
   }
+  frameTs = ts;
   frame(pacer.step(ts));
 }
 
+// ---------- wave 8 frame telemetry ----------
+// Every battle frame reports its breakdown (core/telemetry.js reportFrame):
+// the update and the render submission (CPU ms), the chain's GPU time, the
+// whole frame's draw calls / triangles and what it created (programs,
+// textures, geometries) — so a hitch in the log says where its time went —
+// and the final camera pose goes through the camera-jerk detector.
+let frameTs = NaN;
+const frameRec = {
+  ts: 0, dt: 0, upd: 0, rnd: 0, gpu: NaN, calls: 0, tris: 0, prog: 0, tex: 0, geo: 0, scale: 1,
+  pacer: { locked: false, interval: 0, residual: 0 },
+};
+let jerkBattle = null;
+let mouseStill = 0;
+const jerkCtx = { dt: 0, view: '', aimYaw: NaN, aimPitch: NaN, vehicle: null, mouseDX: 0, mouseDY: 0, shake: false };
+
+// What the battle's camera was asked to do this frame, for the jerk
+// detector: the raw aim (mouse / nose-follow), the view mode (a change is a
+// cut) and the vehicle's motion. Read-only; nothing in a battle changes.
+function cameraContext(b, dt) {
+  const c = jerkCtx;
+  const p = b.player;
+  c.dt = dt;
+  c.mouseDX = input._dx || 0;
+  c.mouseDY = input._dy || 0;
+  // a quarter of a second without a count: a station view's motion is not the hand's
+  mouseStill = c.mouseDX || c.mouseDY ? 0 : mouseStill + dt;
+  c.mouseIdle = mouseStill > 0.25;
+  c.shake = !!(b.shake && b.shake.active);
+  c.vehicle = p && p.position ? p.position : null;
+  c.aimYaw = NaN;
+  c.aimPitch = NaN;
+  c.hullYaw = undefined;
+  c.turretYaw = undefined;
+  c.turretRate = undefined;
+  c.rollRate = undefined;
+  c.pitchRate = undefined;
+  const plane = !!(p && p.dir && p.quat && !p.spec?.hull);
+  let view;
+  if (b.spectate) view = 'spectate';
+  else if (!p || p.alive === false) view = 'dead';
+  else if (plane && b.planeCam) view = 'air:' + (b.planeCam.mode || 'chase');
+  else if (b._crewStations && b._crewStations.ownsMouse) view = 'station:' + (b._crewStations.station || '?');
+  else view = b.sniper ? 'sniper' : 'chase';
+  c.view = view;
+  if (p && p.alive !== false && !b.spectate) {
+    if (view === 'chase' || view === 'sniper' || view.startsWith('air:')) {
+      c.aimYaw = b.camYaw;
+      c.aimPitch = b.camPitch;
+    }
+    if (plane) {
+      // the stick (body rates are not stored): roll and pitch commands
+      c.rollRate = p.controls ? p.controls.roll : undefined;
+      c.pitchRate = p.pitchCmd;
+    } else {
+      c.hullYaw = p.yaw;
+      c.turretYaw = p.turretYaw;
+      c.turretRate = p.turretRate; // rad/s the turret turned this frame
+    }
+  }
+  c.locked = pacer.locked;
+  return c;
+}
+
 function frame(dt) {
+  const tA = performance.now();
+  renderer.info.reset();
+  const infoP = renderer.info.programs;
+  const prog0 = infoP ? infoP.length : 0;
+  const tex0 = renderer.info.memory.textures;
+  const geo0 = renderer.info.memory.geometries;
+  frameBody(dt);
+  if (!battle || externalDriver) return;
+  const r = frameRec;
+  r.ts = Number.isFinite(frameTs) ? frameTs : tA;
+  r.dt = dt;
+  r.upd = +(frameMarks.upd - tA).toFixed(2);
+  r.rnd = +(frameMarks.rnd - frameMarks.upd).toFixed(2);
+  r.calls = renderer.info.render.calls;
+  r.tris = renderer.info.render.triangles;
+  r.prog = (infoP ? infoP.length : 0) - prog0;
+  r.tex = renderer.info.memory.textures - tex0;
+  r.geo = renderer.info.memory.geometries - geo0;
+  const st = postfx && postfx.autoScaleState;
+  r.gpu = st && st.timerLive ? st.last : NaN;
+  r.scale = postfx ? postfx.renderScale : 1;
+  r.pacer.locked = pacer.locked;
+  r.pacer.interval = +(pacer.interval * 1000).toFixed(2);
+  r.pacer.residual = +(pacer.residual * 1000).toFixed(2);
+  reportFrame(r);
+}
+const frameMarks = { upd: 0, rnd: 0 };
+
+function frameBody(dt) {
+  frameMarks.upd = frameMarks.rnd = performance.now();
   if (releaseReload && !battle) flushDeferredReload();
   if (shadersWarming()) {
     // nothing moves and nothing draws until the battle's programs are in
@@ -1702,6 +1945,18 @@ function frame(dt) {
     battle.update(dt);
   }
   if (battle && debugHooks.afterUpdate) debugHooks.afterUpdate(battle, dt);
+  frameMarks.upd = performance.now();
+  if (battle !== jerkBattle) {
+    jerkBattle = battle;
+    resetCameraWatch();
+  }
+  if (battle && !paused && dt > 0) {
+    try {
+      watchCamera(battle.camera, cameraContext(battle, dt));
+    } catch (e) {
+      /* an instrument never costs the frame */
+    }
+  }
   if (battle) {
     // Post-processing draws the world; the HUD is DOM and a 2D canvas stacked
     // over this one, so nothing in the chain can reach it. When the chain is
@@ -1721,6 +1976,7 @@ function frame(dt) {
       xrayRenderer.render(battle.xray.scene, battle.xray.camera);
     }
   }
+  frameMarks.rnd = performance.now();
   input.endFrame();
 }
 
