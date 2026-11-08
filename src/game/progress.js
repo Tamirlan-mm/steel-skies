@@ -695,8 +695,6 @@ export const progress = {
       // is exactly 1.0 no matter how much Silver was spent on it
       out[s.key] = 1 + s.dir * s.per * lvl * boost;
     }
-    // crew count is a whole number: vitality buys the fifth man back
-    out.crewBonus = Math.floor((out.vitality - 1) / 0.18);
     crewCache.set(vehicleId, out);
     return out;
   },
@@ -982,7 +980,7 @@ export const progress = {
     if (diff.silver !== 1 || diff.rp !== 1) {
       const bonusS = Math.round(gross * (diff.silver - 1));
       const bonusR = Math.round(grossRp * (diff.rp - 1));
-      add('Realistic bonus', bonusS, bonusR);
+      add(`${(result.difficulty || this.getDifficulty()) === 'simulator' ? 'Simulator' : 'Realistic'} bonus`, bonusS, bonusR);
       gross += bonusS;
       grossRp += bonusR;
     }

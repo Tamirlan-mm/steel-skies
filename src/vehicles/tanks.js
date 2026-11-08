@@ -122,6 +122,8 @@ export const TANK_SPECS = {
     klass: 'Light Tank', tier: 1, price: null,
     maxSpeed: 18, accel: 9, turnRate: 1.9,
     traverse: 2.6, reload: 4.0, crew: 4,
+    // the damage model's four seats, named for the men the real tank carried
+    crewLabels: { commander: 'Commander / loader', loader: 'Asst. driver' },
     mass: 12.7, maxReverse: 6.0,
     // clutch-and-brake steering: nothing happens until the tracks are turning
     neutralSteer: false, climbMax: 0.62,
@@ -193,6 +195,7 @@ export const TANK_SPECS = {
     klass: 'SPAA', tier: 1, price: null,
     maxSpeed: 11, accel: 6, turnRate: 1.5,
     traverse: 3.2, reload: 1, crew: 5,
+    crewLabels: { commander: 'Loader 2', gunner: 'Commander / gunner', loader: 'Loader 1' },
     pitchSpeed: 3.2,
     gunElev: { min: -0.17, max: 1.48 }, // 85 degrees up
     mass: 22, maxReverse: 4.0,
@@ -3921,8 +3924,9 @@ function paintFor(spec, tintColor) {
 // has its own limited arc. Frames: coax in the GUN frame (gunGroup: +Z along
 // the bore from the trunnion), hull MG in the HULL frame (group). +X is the
 // vehicle's LEFT, so a gun on the right is at -X.
-//   coax side: Tiger, Panther (loader's side), T-34-85, IS-2, the US guns —
-//   right of the gun; the Cromwell's BESA — left (British loader-operator).
+//   coax side: Tiger, Panther (loader's side), T-34-85, IS-2, Stuart —
+//   right of the gun; Sherman and Pershing (TM 9-735 caption, loader's side) and
+//   the Cromwell's BESA (British loader-operator) — left.
 //   gun types and hull arcs (deg, yaw either way / up / down) are period
 //   figures, approximate: ball mounts were +-12..15 deg in traverse.
 // The SU-100 never carried a machine gun (the crew had sub-machine guns); the
@@ -3930,13 +3934,13 @@ function paintFor(spec, tintColor) {
 // D-10S in the casemate. combat/bullets.js MG_TYPES holds rof/speed/cone.
 const MG_BY_NATION = { Germany: 'MG34', USSR: 'DT', USA: 'M1919', Britain: 'BESA' };
 const MG_MOUNTS = {
-  stuart: { coax: { x: -0.2 }, hull: { yaw: 15, up: 20, down: 8 } },
+  stuart: { coax: { x: -0.1 }, hull: { yaw: 15, up: 20, down: 8 } },
   t34: { coax: { x: -0.28 }, hull: { yaw: 12, up: 12, down: 6 } },
   tiger: { coax: { x: -0.3 }, hull: { yaw: 15, up: 20, down: 10 } },
   su100: { coax: { x: -0.19 }, hull: null },
-  pershing: { coax: { x: -0.3 }, hull: { yaw: 15, up: 18, down: 6 } },
+  pershing: { coax: { x: 0.3 }, hull: { yaw: 15, up: 18, down: 6 } },
   panther: { coax: { x: -0.3 }, hull: { yaw: 15, up: 20, down: 10 } },
-  sherman76: { coax: { x: -0.3 }, hull: { yaw: 15, up: 18, down: 6 } },
+  sherman76: { coax: { x: 0.3 }, hull: { yaw: 15, up: 18, down: 6 } },
   is2: { coax: { x: -0.3 }, hull: null },
   cromwell: { coax: { x: 0.3 }, hull: { yaw: 15, up: 15, down: 8 } },
 };

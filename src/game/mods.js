@@ -257,7 +257,6 @@ export function applyCrew(spec, vehicleId = spec.id, inPlace = false) {
   if (s.rollRate) s.rollRate = Math.round(s.rollRate * crew.traverse * 100) / 100;
   if (s.pitchRate) s.pitchRate = Math.round(s.pitchRate * crew.traverse * 100) / 100;
   if (s.hp) s.hp = Math.round(s.hp * crew.vitality);
-  if (s.crew) s.crew = s.crew + crew.crewBonus;
   // fields the entity classes read directly rather than through a stat
   s.repairFactor = (s.repairFactor ?? 1) * crew.repair;
   s.spotFactor = (s.spotFactor ?? 1) * crew.vision;

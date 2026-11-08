@@ -7,7 +7,7 @@ import {
   deriveTankInterior, STATION_ORDER, STATION_LABEL, DEVICE_LABEL, DEVICE_DEFAULTS, limitsFor,
 } from './stations.js';
 import { InteriorLayer, breechPhase } from './layer.js';
-import { gunSightOrigin, sightHidesOwnTank } from './sight.js';
+import { gunSightOrigin, sightHidesOwnTank, stationHidesOwnTurret } from './sight.js';
 
 export { defineTankInterior, definedTankInteriors, breechPhase, STATION_ORDER };
 
@@ -417,7 +417,10 @@ export class TankStations {
   // ---- the vehicle
   attach(tank) {
     if (this.tank && this.tank.onInteriorEvent) this.tank.onInteriorEvent = null;
-    if (this.tank) sightHidesOwnTank(this.tank, false);
+    if (this.tank) {
+      sightHidesOwnTank(this.tank, false);
+      stationHidesOwnTurret(this.tank, false);
+    }
     if (this.layer) {
       this.layer.dispose();
       this.layer = null;
@@ -757,6 +760,11 @@ export class TankStations {
     this.viewing = v;
     // through the sight the outside model is not drawn (sight.js)
     if (this.tank) sightHidesOwnTank(this.tank, !!(b.sniper && tank === this.tank && tank.alive !== false && !b.spectate && !b.finished));
+    // a closed seat in the turret: the outside shell would cut through the layer
+    if (this.tank) {
+      const seat = v ? this.current() : null;
+      stationHidesOwnTurret(this.tank, !!(seat && seat.frame === 'turret' && !(this.hatch && seat.hatch) && !(this.tank.spec.shape && this.tank.spec.shape.openTurret)));
+    }
     if (!v && this.layer) this.layer.setVisible(false);
     this._syncTag();
     return v;

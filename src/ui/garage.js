@@ -1111,7 +1111,7 @@ export class Garage {
           <div class="gxHint">
             Traverse ×${crew.traverse.toFixed(2)} · Reload ×${crew.reload.toFixed(2)} ·
             Mobility ×${crew.mobility.toFixed(2)} · Repair ×${crew.repair.toFixed(2)} ·
-            Spotting ×${crew.vision.toFixed(2)}${crew.crewBonus ? ` · +${crew.crewBonus} crew` : ''}
+            Spotting ×${crew.vision.toFixed(2)} · Vitality ×${crew.vitality.toFixed(2)}
           </div>
           ${qualRow}
           ${rows}

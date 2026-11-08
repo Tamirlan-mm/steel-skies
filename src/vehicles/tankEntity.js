@@ -1105,7 +1105,8 @@ export class Tank {
   crewPanelRows(labels = null) {
     const rows = [];
     const st = this.crewStations;
-    const lab = (r) => (labels && labels[r] != null ? labels[r] : r);
+    const own = this.spec.crewLabels;
+    const lab = (r) => (own && own[r]) || (labels && labels[r] != null ? labels[r] : r);
     for (let i = 0; i < st.length; i++) {
       const key = st[i];
       const h = clamp(this.crewAlive[key] || 0, 0, 1);

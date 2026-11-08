@@ -92,16 +92,11 @@ function boxesOf(spec) {
 
 const arr = (v) => [v.x, v.y, v.z];
 
-// The seats the REAL vehicle had (wave 8). The battles hand the interior a
-// spec with the player's crew upgrades applied (game/mods.js): the
-// "vitality" skill ADDS to spec.crew (an IS-2 arrives with crew 8), and
-// crewRoles(spec) then grows a bow gunner the four-man IS-2 and SU-100 never
-// had. The bonus is a pool of extra hit points, not men, so it is taken back
-// off here. (The Stuart's four men are not the damage model's four: stuart.js
-// states its own crewRoles.)
+// The seats the REAL vehicle had. Crew training no longer adds men to
+// spec.crew, so the spec's figure is the real one. (The Stuart's four men are
+// not the damage model's four: stuart.js states its own crewRoles.)
 export function realCrewCount(spec) {
-  const bonus = spec && spec.crewSkills && Number.isFinite(spec.crewSkills.crewBonus) ? spec.crewSkills.crewBonus : 0;
-  return Math.max(1, ((spec && spec.crew) | 0) - Math.max(0, bonus | 0));
+  return Math.max(1, (spec && spec.crew) | 0);
 }
 
 export function realCrewRoles(spec) {

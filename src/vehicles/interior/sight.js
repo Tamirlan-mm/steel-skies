@@ -157,3 +157,28 @@ export function sightHidesOwnTank(tank, on) {
     tank._sightHidden = null;
   }
 }
+
+/**
+ * From a closed seat in the turret the outside model's turret shell passes
+ * right through the near plane. The layer is squashed into the front 1% of the
+ * depth range, and the sliver of shell inside that same 1% beats it: a thin
+ * full-width line, lit by the sun, drawn over the whole interior (the Cromwell's
+ * roof, at dusk). Nothing of the shell can be seen from these seats, so it is
+ * not drawn: the gun, the hull and the shadow proxy stay, and only what this
+ * function hid is shown again. Called every frame.
+ */
+export function stationHidesOwnTurret(tank, on) {
+  const tg = tank && tank.turretGroup;
+  if (!tg) return;
+  if (on) {
+    const hidden = tank._stationHidden || (tank._stationHidden = []);
+    for (const c of tg.children) {
+      if (!c.visible || !c.isMesh || c.name === 'shadowProxy') continue;
+      c.visible = false;
+      hidden.push(c);
+    }
+  } else if (tank._stationHidden) {
+    for (const c of tank._stationHidden) c.visible = true;
+    tank._stationHidden = null;
+  }
+}
