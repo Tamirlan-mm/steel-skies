@@ -1618,3 +1618,317 @@ html, body {
 @keyframes hudBlink { from { opacity: 1; } to { opacity: 0.45; } }
 @keyframes hudSwapPulse { from { opacity: 1; } to { opacity: 0.45; } }
 @keyframes hudSwapFlow { to { stroke-dashoffset: -12; } }
+
+/* ============================================================
+   MOBILE (wave 5, mobile lane). Every rule below sits under a class that
+   core/touch.js puts on <html> only on a touch device (pointer: coarse):
+     ss-touch, ss-phone | ss-tablet, ss-portrait | ss-landscape,
+     ss-compact (height < 500), ss-inbattle, ss-m-tank | ss-m-air | ss-m-spec
+   A desktop never gets any of them, so nothing here changes it.
+   Both bottom corners belong to the thumbs: no HUD panel sits there.
+   ============================================================ */
+#rotateGate { display: none; }
+html.ss-touch {
+  --sl: max(12px, env(safe-area-inset-left));
+  --sr: max(12px, env(safe-area-inset-right));
+  --st: max(8px, env(safe-area-inset-top));
+  --sb: max(10px, env(safe-area-inset-bottom));
+  --hs: 0.85; /* corner-panel scale (tablet); the phone sets its own */
+}
+html.ss-touch.ss-phone { --hs: 0.6; }
+html.ss-touch #app {
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+html.ss-touch canvas.game, html.ss-touch #hangarCanvas { touch-action: none; }
+html.ss-touch button { touch-action: manipulation; }
+
+/* ---------- rotate gate: a phone is always landscape; a tablet only in battle */
+html.ss-touch.ss-phone.ss-portrait #rotateGate,
+html.ss-touch.ss-portrait.ss-inbattle #rotateGate {
+  display: flex; position: fixed; inset: 0; z-index: 200;
+  flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  background: #0e0f0c; color: #e9e4d4; text-align: center; padding: 24px;
+  font-family: 'Bahnschrift', 'DIN Alternate', 'Roboto Condensed', 'Arial Narrow', sans-serif;
+}
+#rotateGate b { font-size: 16px; letter-spacing: 0.18em; }
+#rotateGate span { font-size: 13px; letter-spacing: 0.06em; color: #bdb7a4; }
+
+/* ---------- the touch layer ---------- */
+#touchUI {
+  position: absolute; inset: 0; z-index: 25; /* over the HUD, under #overlay (30) */
+  touch-action: none; overflow: hidden;
+  font-family: 'Bahnschrift', 'DIN Alternate', 'Roboto Condensed', 'Arial Narrow', sans-serif;
+  --tc-bg: rgba(14, 15, 12, 0.46);
+  --tc-line: rgba(233, 228, 212, 0.55);
+  --tc-ink: #e9e4d4;
+  --tc-on: #ffd95e;
+}
+#touchUI .tcStickZone {
+  position: absolute; left: 0; bottom: 0; width: 45%; height: 65%;
+}
+/* the ghost ring says where the stick lives until the first thumb lands */
+#touchUI .tcHint {
+  position: absolute; left: calc(var(--sl) + 54px); bottom: calc(var(--sb) + 34px);
+  width: 112px; height: 112px; border-radius: 50%;
+  border: 1px dashed rgba(233, 228, 212, 0.28); pointer-events: none;
+}
+#touchUI .tcStickZone.tcActive .tcHint { display: none; }
+/* aircraft: the throttle owns the left edge, the stick starts right of it */
+html.ss-m-air #touchUI .tcStickZone { left: calc(var(--sl) + 64px); width: calc(45% - var(--sl) - 64px); }
+html.ss-m-air #touchUI .tcHint { left: 40px; }
+#touchUI .tcBase {
+  position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px;
+  border-radius: 50%; border: 2px solid var(--tc-line); background: rgba(14, 15, 12, 0.3);
+  pointer-events: none;
+}
+html.ss-tablet #touchUI .tcBase { width: 136px; height: 136px; margin: -68px 0 0 -68px; }
+#touchUI .tcKnob {
+  position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px;
+  border-radius: 50%; background: rgba(233, 228, 212, 0.42); border: 1px solid #000;
+}
+#touchUI .tcBtn {
+  position: absolute; display: none; box-sizing: border-box;
+  width: 48px; height: 44px; padding: 0;
+  align-items: center; justify-content: center; flex-direction: column; gap: 0;
+  background: var(--tc-bg); color: var(--tc-ink);
+  border: 1px solid var(--tc-line); border-radius: 0;
+  font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  text-shadow: 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000;
+  touch-action: none; cursor: pointer;
+}
+#touchUI .tcBtn span { pointer-events: none; line-height: 1.1; }
+#touchUI .tcBtn em { font-style: normal; font-size: 11px; font-weight: 600; color: #bdb7a4; pointer-events: none; line-height: 1.1; }
+#touchUI .tcBtn em:empty { display: none; }
+#touchUI .tcBtn.tcDown { background: var(--tc-ink); color: #0e0f0c; text-shadow: none; }
+#touchUI .tcBtn.tcDown em { color: #0e0f0c; }
+#touchUI .tcBtn.tcSel { border-color: var(--tc-on); color: var(--tc-on); }
+#touchUI.tcMap .tcBtn, #touchUI.tcMap .tcStickZone { opacity: 0.2; }
+html.ss-m-tank #touchUI .tcBtn[data-modes~="tank"],
+html.ss-m-air #touchUI .tcBtn[data-modes~="air"],
+html.ss-m-spec #touchUI .tcBtn[data-modes~="spec"] { display: flex; }
+html.ss-touch #touchUI .tcBtn.tcOff { display: none; }
+
+/* top-left utility row: pause, map, score, then the class's switches */
+#touchUI .tc-pause { left: var(--sl); top: var(--st); font-size: 13px; }
+#touchUI .tc-map { left: calc(var(--sl) + 54px); top: var(--st); }
+#touchUI .tc-score { left: calc(var(--sl) + 108px); top: var(--st); width: 56px; }
+/* abandon / bail out: hold 1.5 s (the battle's own timer is the confirmation) */
+#touchUI .tc-bail { left: calc(var(--sl) + 170px); top: var(--st); width: 44px; font-size: 16px; border-color: #b86a5a; }
+#touchUI .tc-art { right: calc(var(--sr) + 178px); top: calc(var(--st) + 126px); }
+html.ss-tablet #touchUI .tc-art { top: calc(var(--st) + 176px); }
+html.ss-phone #hud.scoped ~ #touchUI .tc-art { display: none; }
+#touchUI .tc-view { right: var(--sr); top: calc(var(--st) + 126px); width: 56px; }
+/* tablet: the instruments sit under the minimap, VIEW goes above the throttle */
+html.ss-tablet #touchUI .tc-view { right: auto; top: auto; left: var(--sl); bottom: calc(var(--sb) + 128px); }
+/* a row under the minimap, clear of the compass and the ticket bars */
+#touchUI .tc-smoke { right: calc(var(--sr) + 116px); top: calc(var(--st) + 126px); width: 56px; }
+#touchUI .tc-aid { right: calc(var(--sr) + 62px); top: calc(var(--st) + 126px); }
+html.ss-tablet #touchUI .tc-smoke, html.ss-tablet #touchUI .tc-aid { top: calc(var(--st) + 176px); }
+#touchUI .tc-scout { right: var(--sr); top: calc(var(--st) + 126px); width: 56px; }
+html.ss-tablet #touchUI .tc-scout { top: calc(var(--st) + 176px); }
+#touchUI .tc-gear { left: var(--sl); top: calc(var(--st) + 52px); }
+#touchUI .tc-flaps { left: calc(var(--sl) + 54px); top: calc(var(--st) + 52px); width: 56px; }
+#touchUI .tc-brake { left: calc(var(--sl) + 116px); top: calc(var(--st) + 52px); width: 56px; }
+#touchUI .tc-wep { left: calc(var(--sl) + 178px); top: calc(var(--st) + 52px); }
+
+/* right thumb cluster (offsets from the bottom-right safe corner) */
+#touchUI .tc-fire, #touchUI .tc-afire {
+  right: calc(var(--sr) + 18px); bottom: calc(var(--sb) + 18px);
+  width: 86px; height: 86px; border-radius: 50%; font-size: 14px; letter-spacing: 0.14em;
+  border-width: 2px; background: rgba(120, 26, 20, 0.42);
+}
+#touchUI .tc-mg, #touchUI .tc-bomb {
+  right: calc(var(--sr) + 118px); bottom: calc(var(--sb) + 10px);
+  width: 60px; height: 60px; border-radius: 50%;
+}
+#touchUI .tc-sight, #touchUI .tc-azoom {
+  right: calc(var(--sr) + 30px); bottom: calc(var(--sb) + 116px);
+  width: 60px; height: 60px; border-radius: 50%;
+}
+#touchUI .tc-rocket {
+  right: calc(var(--sr) + 118px); bottom: calc(var(--sb) + 80px);
+  width: 56px; height: 52px;
+}
+#touchUI .tc-zin { right: calc(var(--sr) + 104px); bottom: calc(var(--sb) + 134px); }
+#touchUI .tc-zout { right: calc(var(--sr) + 104px); bottom: calc(var(--sb) + 82px); }
+#touchUI .tc-zin, #touchUI .tc-zout { font-size: 18px; }
+/* the urgent slot: REPAIR (hold) normally, EXT while burning */
+#touchUI .tc-repair, #touchUI .tc-ext, #touchUI .tc-aext {
+  right: calc(var(--sr) + 188px); bottom: calc(var(--sb) + 10px);
+  width: 62px; height: 52px;
+}
+#touchUI .tc-ext, #touchUI .tc-aext { border-color: #e05040; color: #ff9a8a; animation: hudBlink 0.4s infinite alternate; }
+#touchUI .tc-sh1, #touchUI .tc-sh2, #touchUI .tc-sh3 {
+  bottom: calc(var(--sb) + 10px); width: 56px; height: 52px;
+}
+#touchUI .tc-sh1 { right: calc(var(--sr) + 258px); }
+#touchUI .tc-sh2 { right: calc(var(--sr) + 320px); }
+#touchUI .tc-sh3 { right: calc(var(--sr) + 382px); }
+/* aircraft: throttle on the left edge, rudder chips on the ground only */
+#touchUI .tc-thrUp { left: var(--sl); bottom: calc(var(--sb) + 64px); width: 56px; height: 50px; }
+#touchUI .tc-thrDn { left: var(--sl); bottom: var(--sb); width: 56px; height: 50px; }
+#touchUI .tc-rudL { left: calc(50% - 64px); bottom: calc(var(--sb) + 40px); width: 56px; }
+#touchUI .tc-rudR { left: calc(50% + 8px); bottom: calc(var(--sb) + 40px); width: 56px; }
+/* spectator */
+#touchUI .tc-up { right: calc(var(--sr) + 18px); bottom: calc(var(--sb) + 76px); width: 56px; height: 52px; }
+#touchUI .tc-down { right: calc(var(--sr) + 18px); bottom: calc(var(--sb) + 14px); width: 56px; height: 52px; }
+#touchUI .tc-fast { right: calc(var(--sr) + 84px); bottom: calc(var(--sb) + 14px); width: 56px; height: 52px; }
+
+/* ---------- the HUD on touch: corner panels leave the thumbs alone ---------- */
+html.ss-touch #helpPanel {
+  left: 50%; top: auto; bottom: calc(var(--sb) + 56px); transform: translateX(-50%);
+  font-size: 12px; max-width: 46vw; pointer-events: none;
+}
+html.ss-touch #helpPanel span { white-space: normal; }
+html.ss-touch #minimap {
+  top: var(--st); bottom: auto; right: var(--sr);
+  width: 160px; height: 160px;
+}
+html.ss-touch #killfeed { top: calc(var(--st) + 232px); right: calc(var(--sr) + 64px); font-size: 12px; }
+html.ss-touch #damagePanel, html.ss-touch #statusPanel {
+  left: var(--sl); top: calc(var(--st) + 52px); bottom: auto;
+  transform: scale(var(--hs)); transform-origin: top left;
+}
+html.ss-tablet #damagePanel, html.ss-tablet #statusPanel { top: calc(var(--st) + 86px); }
+html.ss-tablet.ss-m-air #damagePanel, html.ss-tablet.ss-m-air #statusPanel { top: calc(var(--st) + 104px); }
+html.ss-touch #ammoPanel {
+  right: var(--sr); top: calc(var(--st) + 230px); bottom: auto;
+  transform: scale(var(--hs)); transform-origin: top right;
+}
+html.ss-touch #airPanel {
+  right: var(--sr); top: calc(var(--st) + 176px); bottom: auto;
+  transform: scale(var(--hs)); transform-origin: top right;
+}
+html.ss-touch #speedo { bottom: calc(var(--sb) + 4px); font-size: 14px; }
+html.ss-phone #speedo { bottom: calc(var(--sb) + 70px); }
+html.ss-phone.ss-m-air #speedo { display: none; }
+html.ss-touch #killCamFrame { left: 50%; top: calc(var(--st) + 60px); transform: translateX(-50%); width: 22vw; }
+html.ss-touch #scoreboard {
+  min-width: 0; width: max-content; max-width: 94vw; max-height: 86vh; overflow: auto;
+  padding: 10px 12px; gap: 14px;
+}
+html.ss-touch #scoreboard .sbCol, html.ss-touch #scoreboard .sbCol.wide { min-width: 0; }
+html.ss-touch #bigMapCanvas { max-width: 78vh; max-height: 78vh; }
+html.ss-touch #bigMap .bmLegend { flex-wrap: wrap; gap: 8px 12px; max-width: 78vh; }
+
+/* phone landscape (reference 844x390) */
+html.ss-phone #compassWrap { top: var(--st); width: 300px; height: 20px; }
+html.ss-phone #compass { width: 300px; height: 20px; }
+html.ss-phone #topBar { top: calc(var(--st) + 24px); gap: 8px; }
+html.ss-phone .ticketWrap { width: 96px; height: 14px; }
+html.ss-phone .ticketWrap span { font-size: 11px; }
+html.ss-phone #matchTimer { font-size: 13px; }
+html.ss-phone #capStatus { font-size: 11px; }
+html.ss-phone #matchObjective { display: none !important; }
+html.ss-phone #minimap { width: 112px; height: 112px; }
+html.ss-phone #killfeed { top: calc(var(--st) + 178px); right: calc(var(--sr) + 100px); font-size: 11px; max-width: 34vw; }
+html.ss-phone #killfeed > :nth-child(n + 4) { display: none; }
+html.ss-phone #ammoPanel { display: none !important; }
+html.ss-phone #damageLog { display: none; }
+html.ss-phone #reloadWrap { top: calc(50% + 30px); }
+html.ss-phone #shellLabel { display: none; }
+html.ss-phone #damagePanel, html.ss-phone #statusPanel { top: calc(var(--st) + 52px); transform: scale(0.5); }
+/* aircraft on a phone: the instruments sit top-left under the switches, the
+   plane's damage card gives way to them */
+html.ss-phone.ss-m-air #airPanel {
+  left: var(--sl); right: auto; top: calc(var(--st) + 104px);
+  transform: scale(0.46); transform-origin: top left;
+}
+html.ss-phone.ss-m-air #damagePanel, html.ss-phone.ss-m-air #statusPanel { display: none !important; }
+/* in the gunner's sight the optic's own label and legend need the room */
+html.ss-phone #hud.scoped #damagePanel, html.ss-phone #hud.scoped #statusPanel { display: none !important; }
+html.ss-phone #hud.scoped ~ #touchUI .tc-smoke, html.ss-phone #hud.scoped ~ #touchUI .tc-aid,
+html.ss-phone #hud.scoped ~ #touchUI .tc-scout { display: none; }
+html.ss-phone #killCamFrame { width: 26vw; top: calc(var(--st) + 54px); }
+html.ss-phone #awardBanner .awTitle { font-size: 18px; }
+html.ss-phone #deathInfo { font-size: 15px; }
+html.ss-phone #helpPanel { bottom: auto; top: calc(var(--st) + 56px); max-width: 52vw; font-size: 11px; }
+html.ss-phone #bigMap .bmFrame { padding: 6px 8px 8px; }
+html.ss-phone #bigMapCanvas { max-width: 80vh; max-height: 80vh; }
+html.ss-phone #bigMap .bmFrame { display: grid; grid-template-columns: auto auto; gap: 0 10px; align-items: start; }
+html.ss-phone #bigMap .bmHead { grid-column: 1 / 3; margin-bottom: 4px; }
+html.ss-phone #bigMap .bmLegend { flex-direction: column; margin-top: 0; max-width: 120px; }
+
+/* ---------- overlays (pause, spawn picker, results) ---------- */
+html.ss-touch #overlay button { min-height: 44px; }
+html.ss-compact #overlay { gap: 10px; padding: 10px; }
+html.ss-compact #overlay h2 { font-size: 24px; letter-spacing: 5px; }
+html.ss-compact #overlay .btnRow { flex-wrap: wrap; justify-content: center; }
+
+/* ---------- the hangar on touch ---------- */
+html.ss-touch #garage .gxTopNav, html.ss-touch #garage .modeTab, html.ss-touch #garage .gxScreenTab,
+html.ss-touch #garage .gxVAct, html.ss-touch #garage .modChip, html.ss-touch #garage .bmChip,
+html.ss-touch #garage .gxPick, html.ss-touch #garage .gxBuy, html.ss-touch #garage .gxTargetBtn,
+html.ss-touch #garage .gxToggle, html.ss-touch #garage .gxInspectBtn, html.ss-touch #garage .gxNation {
+  min-height: 40px;
+}
+html.ss-touch #garage .gxGlyph { width: 40px; height: 40px; }
+html.ss-touch #garage .gxRailBtn { width: 38px; height: 38px; }
+html.ss-touch #garage .gxResearchRow { touch-action: pan-x; scroll-snap-type: x proximity; }
+html.ss-touch #garage .gxVCard { scroll-snap-align: start; }
+html.ss-touch #garage .gxRight { touch-action: pan-y; }
+html.ss-touch #garage .gxSet input[type=range] { min-height: 32px; }
+html.ss-touch #garage .ammoBtn { width: 40px; height: 40px; font-size: 15px; }
+html.ss-touch #garage .ammoRow { gap: 6px; }
+html.ss-touch #garage #battleBtn { min-height: 40px; }
+/* X-ray / protection inspector bar and legend */
+html.ss-touch .ixBack, html.ss-touch .ixTool, html.ss-touch .ixClose,
+html.ss-touch .ixModes button, html.ss-touch .ixSeg button { min-height: 40px; }
+html.ss-touch .ixClose { min-width: 40px; }
+html.ss-touch .ixChip { min-height: 32px; }
+
+/* phone landscape: top bar 44, the stage takes what the dock leaves */
+html.ss-compact #garage {
+  grid-template-columns: 42px minmax(0, 1fr) min(250px, 31vw);
+  grid-template-rows: 44px minmax(0, 1fr) auto;
+}
+html.ss-compact #garage.gxCollapsed { grid-template-columns: 42px minmax(0, 1fr) 0; }
+html.ss-compact #garage.gxInspecting { grid-template-rows: 44px minmax(0, 1fr) 0; }
+html.ss-compact #garage .gxTop { gap: 4px; padding: 0 6px; }
+html.ss-compact #garage .gxTopL, html.ss-compact #garage .gxTopR { gap: 4px; }
+html.ss-compact #garage .gxTopR { padding-top: 0; }
+html.ss-compact #garage .gxTopNav { padding: 4px 6px; font-size: 11px; letter-spacing: 0.06em; min-height: 40px; }
+html.ss-compact #garage .gxTopNav[data-screen="community"] { display: none; }
+html.ss-compact #garage .gxVersion { display: none; }
+html.ss-compact #garage .gxCur { padding: 2px 5px; font-size: 12px; }
+html.ss-compact #garage .gxCur i { display: none; }
+html.ss-compact #garage #balCrew { display: none; }
+html.ss-compact #garage .gxGlyph { width: 40px; height: 40px; }
+html.ss-compact #garage #battleBtn { padding: 0 22px; height: 40px; font-size: 13px; letter-spacing: 0.16em; }
+html.ss-compact #garage .gxStrip { padding: 2px 10px 3px; }
+html.ss-compact #garage .gxStrip small { display: none; }
+html.ss-compact #garage .gxRail { gap: 3px; padding: 5px 0; overflow-y: auto; }
+html.ss-compact #garage .gxRailBtn { width: 38px; height: 38px; }
+html.ss-compact #garage .gxRailSep { margin: 1px 0; }
+html.ss-compact #garage .gxRight { padding: 6px; gap: 6px; }
+html.ss-compact #garage .gxHero { bottom: 4px; padding: 4px 10px 6px; }
+html.ss-compact #garage .gxHeroName { font-size: 17px; }
+html.ss-compact #garage .gxHeroDesc { display: none; }
+html.ss-compact #garage .gxStageTools { left: 8px; top: 26px; }
+html.ss-compact #garage .gxInspectBtn { padding: 4px 8px; min-height: 40px; }
+html.ss-compact #garage .gxInspectBtn span { display: none; }
+/* the dock: research row on top, nations and the screen tabs share one line */
+html.ss-compact #garage .gxDock {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "res res" "nat bar";
+}
+html.ss-compact #garage.gxInspecting .gxDock { display: none; }
+html.ss-compact #garage .gxResearchWrap { grid-area: res; padding: 4px 6px 2px; border-top: none; }
+html.ss-compact #garage .gxNations { grid-area: nat; padding: 0 4px; align-items: center; border-top: 1px solid var(--gx-rule); }
+html.ss-compact #garage .gxNation { padding: 2px 8px; min-height: 40px; border-bottom: 1px solid transparent; }
+html.ss-compact #garage .gxNation span { display: none; }
+html.ss-compact #garage .gxBottomBar { grid-area: bar; height: 40px; gap: 6px; padding: 0 6px; min-width: 0; }
+html.ss-compact #garage .gxScreens { min-width: 0; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; align-self: center; }
+/* a swipe still scrolls the tabs; the bar must not grow by a scrollbar's height (740x360) */
+html.ss-compact #garage .gxScreens::-webkit-scrollbar { display: none; }
+html.ss-compact #garage .gxScreenTab { padding: 4px 8px; letter-spacing: 0.08em; min-height: 40px; flex: 0 0 auto; }
+html.ss-compact #garage .modeTab { min-height: 40px; padding: 4px 9px; }
+html.ss-compact #garage .gxLineupSum { display: none; }
+html.ss-compact #garage .gxVCard { flex: 0 0 124px; padding: 4px; gap: 2px; }
+html.ss-compact #garage .gxVCard.selected { padding: 3px; }
+html.ss-compact #garage .gxVThumb { height: 34px; }
+html.ss-compact #garage .gxVFoot { min-height: 0; }
+html.ss-compact #garage .gxVAct { min-height: 36px; }
+html.ss-compact #garage .gxResearchRow { gap: 6px; padding-bottom: 3px; }
+html.ss-compact #garage .gxOverlayHead { padding: 4px 10px; }

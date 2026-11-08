@@ -59,7 +59,7 @@ export const MAP_PRESETS = {
     groundType: 'grass', hollowType: 'dirt',
     dust: { grass: 0x8a7050, dirt: 0x9a8a68, sand: 0xc0a878, snow: 0xeef3f7, rock: 0x9c968c },
     wind: 3.2, snowLine: 999,
-    weather: { clear: 5, overcast: 3, snow: 0.4, haze: 1.6 },
+    weather: { clear: 5, overcast: 3, snow: 0.4, haze: 1.6, rain: 2 },
     landuse: {
       cell: [125, 95], warp: 12, hedgeChance: 0.85,
       crops: { pasture: 0.5, wheat: 0.18, stubble: 0.07, plough: 0.1, fallow: 0.15 },
@@ -91,7 +91,7 @@ export const MAP_PRESETS = {
     groundType: 'sand', hollowType: 'sand',
     dust: { grass: 0xbba377, dirt: 0xc9ad7c, sand: 0xd8bb84, snow: 0xeef3f7, rock: 0xa8977a },
     wind: 4.6, snowLine: 999,
-    weather: { clear: 6, overcast: 1.2, snow: 0, haze: 4 },
+    weather: { clear: 6, overcast: 1.2, snow: 0, haze: 4, rain: 0 },
     // North Africa: no fields and no hedges. A parcel cell far larger than any
     // map means no parcel edge crosses the playable area, and every crop is
     // pasture with cropCols all equal to `low`, so the ground shows no pattern.
@@ -128,7 +128,7 @@ export const MAP_PRESETS = {
     groundType: 'snow', hollowType: 'snow',
     dust: { grass: 0xdfe7ee, dirt: 0xbfae94, sand: 0xd8bb84, snow: 0xeef3f7, rock: 0x9aa2ab },
     wind: 2.4, snowLine: -4,
-    weather: { clear: 3, overcast: 4, snow: 4, haze: 1 },
+    weather: { clear: 3, overcast: 4, snow: 4, haze: 1, rain: 0 },
     // Forest clearings rather than farmland: small hay meadows and rye plots
     // under snow, split by log fences, never hedges. Seven large conifer woods
     // (about 30% canopy after the cap, road and village are cut out).
@@ -170,7 +170,7 @@ export const MAP_PRESETS = {
     groundType: 'grass', hollowType: 'dirt',
     dust: { grass: 0x9c8a62, dirt: 0xae9a74, sand: 0xcdb88c, snow: 0xeef3f7, rock: 0xb2ad9d },
     wind: 4.2, snowLine: 999,
-    weather: { clear: 5, overcast: 2.2, snow: 0.25, haze: 2.6 },
+    weather: { clear: 5, overcast: 2.2, snow: 0.25, haze: 2.6, rain: 1 },
     landuse: {
       cell: [420, 260], warp: 4, hedgeChance: 0.1,
       crops: { pasture: 0.18, wheat: 0.36, stubble: 0.14, plough: 0.12, fallow: 0.2 },
@@ -358,7 +358,41 @@ export const WEATHERS = {
     cirrus: { cover: 0.5, tau: 0.1 },
     precip: 'none', snowCover: 0, gripMul: 1, windMul: 0.7,
   },
+  // W-01: steady rain under a low grey deck. V_game 2.5 km (6.25 km real, so
+  // the ground veil at 800 m is ~0.71, accept 0.6-0.8); the sun is a dim disc
+  // through the deck, most of the light comes from the dome. Never rolled on
+  // the desert or the winter map (their weather tables give it 0).
+  //   wet     0..1 how wet every surface is (W-02: terrain uWet, the vehicle
+  //           zone uniform, the airfield's concrete)
+  //   puddle  0..1 how far standing water spreads in ruts and hollows
+  //   rainRate 0..1 streak density and the rain bed's level (W-01)
+  rain: {
+    name: 'Rain',
+    rig: { sky: 1.0, hemi: 0.85, ibl: 0.95 },
+    visibilityKm: 6.25,
+    sunMul: 0.3, hemiMul: 1.35,
+    fogNearMul: 0.55, fogFarMul: 0.5,
+    fogTint: 0x9ba5ae, fogMix: 0.55,
+    skyTint: 0x808b95, skyMix: 0.62,
+    turbidityAdd: 7, rayleighMul: 0.45, mieMul: 2.4,
+    cloudAdd: 0.45, cloudOpacity: 0.97, exposureMul: 0.95, envMul: 1.05,
+    precip: 'rain', snowCover: 0, gripMul: 0.85, windMul: 1.25,
+    wet: 1, puddle: 1, rainRate: 1,
+  },
 };
+
+// W-02 surface wetness of a weather: what the terrain, the vehicles and the
+// airfield read (composePreset stores it as preset.wet). An overcast morning
+// leaves a little damp; rain soaks everything.
+export function wetnessOf(wx) {
+  if (!wx) return Object.freeze({ wet: 0, puddle: 0, rain: 0 });
+  const wet = Number.isFinite(wx.wet) ? wx.wet : 0;
+  return Object.freeze({
+    wet: Math.min(1, Math.max(0, wet)),
+    puddle: Math.min(1, Math.max(0, Number.isFinite(wx.puddle) ? wx.puddle : 0)),
+    rain: wx.precip === 'rain' ? Math.min(1, Math.max(0, Number.isFinite(wx.rainRate) ? wx.rainRate : 1)) : 0,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Colour helpers. Everything here is a packed 0xRRGGBB int, because that is what
@@ -1281,6 +1315,8 @@ export function composePreset(biomeKey = 'meadow', todKey = 'noon', weatherKey =
     snowCover: snow,
     snowLine: biome.snowLine,
     gripMul: wx.gripMul,
+    // W-02: { wet, puddle, rain } 0..1 (wetnessOf); dry everywhere but rain
+    wet: wetnessOf(wx),
     dust,
     // --- wind, for drifting smoke and swaying trees ---
     windStrength: biome.wind * wx.windMul,
@@ -1342,6 +1378,19 @@ export function setActivePreset(preset) {
   return active;
 }
 
+function presetOverride() {
+  const g = typeof globalThis !== 'undefined' ? globalThis.__STEEL_SKIES_PRESET_OVERRIDE__ : null;
+  if (g && typeof g === 'object') return g;
+  try {
+    const q = typeof location !== 'undefined' && location.search ? new URLSearchParams(location.search) : null;
+    const wx = q && q.get('wx');
+    if (wx && WEATHERS[wx]) return { weather: wx };
+  } catch {
+    /* no location (node) */
+  }
+  return null;
+}
+
 // Roll a biome, an hour and the weather. Signature is unchanged — no argument
 // gives a fully random map, exactly as before — and the result is registered as
 // the active preset so terrain.js classifies its surfaces to match.
@@ -1351,8 +1400,18 @@ export function randomPreset(opts = {}) {
   // unless set; the calibration screenshots are taken this way.
   const forced = typeof globalThis !== 'undefined' ? globalThis.__STEEL_SKIES_PRESET__ : null;
   if (forced && typeof forced === 'object') opts = { ...forced, ...opts };
+  // Debug override that wins over the hook above and the caller: the bench
+  // pins its own preset through __STEEL_SKIES_PRESET__, so a rainy (or any)
+  // bench run sets globalThis.__STEEL_SKIES_PRESET_OVERRIDE__ = { weather: 'rain' }
+  // or opens the page with &wx=<weather> (read once below). Inert otherwise.
+  const over = presetOverride();
+  if (over) opts = { ...opts, ...over };
   const rng = opts.rng || Math.random;
-  const keys = Object.keys(MAP_PRESETS);
+  // map: 'town' (wave 5) is the market-town ground map (world/town.js). It is a
+  // European town, so an unforced biome is the temperate one and the
+  // architecture is the stone Normandy kit whatever the biome.
+  const townMap = opts.map === 'town';
+  const keys = townMap ? TOWN_BIOMES : Object.keys(MAP_PRESETS);
   const biomeKey = opts.biome && MAP_PRESETS[opts.biome]
     ? opts.biome
     : keys[Math.floor(rng() * keys.length)];
@@ -1374,6 +1433,20 @@ export function randomPreset(opts = {}) {
 
   const preset = composePreset(biomeKey, todKey, weatherKey);
   preset.windDir = rng() * Math.PI * 2;
+  if (townMap) markTownPreset(preset);
   setActivePreset(preset);
+  return preset;
+}
+
+// The biomes an unforced town map is drawn from.
+export const TOWN_BIOMES = Object.freeze(['meadow']);
+
+// Turn a composed preset into the town map's: landuse.js / scenery.js read
+// preset.map, the kit is the stone one. Returns the same object.
+export function markTownPreset(preset) {
+  if (!preset || typeof preset !== 'object') return preset;
+  preset.map = 'town';
+  preset.architecture = 'normandy';
+  preset.label = `Town · ${preset.label}`;
   return preset;
 }

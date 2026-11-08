@@ -420,7 +420,49 @@ function airfieldSurfaces(grassHex, palette) {
     out[k].polygonOffsetFactor = -1;
     out[k].polygonOffsetUnits = -4;
   }
+  applyAirfieldWet(out, palette);
   return out;
+}
+
+// W-02 on the airfield. The surface materials are cached for the session, so
+// every battle sets them from its own preset (palette.wet, presets.js
+// wetnessOf), from the dry values kept on first sight. Concrete is porous: it
+// darkens (E-20 dry Y 0.313 -> 0.18 soaked) and loses most of its roughness;
+// tar macadam darkens less; paint and boards are films, they mostly gloss;
+// the mown grass darkens a little.
+//   tint   x (1 - tint . wet)
+//   rough  gain x (1 - rough . wet), floor toward 0.1
+export const AIRFIELD_WET = Object.freeze({
+  runway: { tint: 0.42, rough: 0.62 },
+  tarmac: { tint: 0.25, rough: 0.6 },
+  paint: { tint: 0.08, rough: 0.5 },
+  board: { tint: 0.2, rough: 0.3 },
+  boardDark: { tint: 0.1, rough: 0.3 },
+  grass: { tint: 0.14, rough: 0.2 },
+});
+export const RUNWAY_DRY_TINT = Object.freeze(CONCRETE_TINT.slice());
+function wetOfPalette(palette) {
+  const w = palette && palette.wet;
+  return w && Number.isFinite(w.wet) ? Math.min(1, Math.max(0, w.wet)) : 0;
+}
+export function applyAirfieldWet(surfaces, palette) {
+  const wet = wetOfPalette(palette);
+  for (const k of Object.keys(AIRFIELD_WET)) {
+    const m = surfaces && surfaces[k];
+    const U = m && m.userData && m.userData.photo && m.userData.photo.uniforms;
+    if (!U || !U.psTintA || !U.psRAx) continue;
+    if (!m.userData.dryAirfield) {
+      m.userData.dryAirfield = { tint: U.psTintA.value.clone(), rough: U.psRAx.value.clone() };
+    }
+    const d = m.userData.dryAirfield;
+    const r = AIRFIELD_WET[k];
+    U.psTintA.value.copy(d.tint).multiplyScalar(1 - r.tint * wet);
+    U.psRAx.value.copy(d.rough);
+    U.psRAx.value.x = d.rough.x * (1 - r.rough * wet);
+    U.psRAx.value.y = d.rough.y + (Math.min(d.rough.y, 0.1) - d.rough.y) * wet;
+    m.userData.airfieldWet = wet;
+  }
+  return wet;
 }
 
 // One material's worth of static geometry, merged into a single mesh. The

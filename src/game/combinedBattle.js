@@ -12,6 +12,7 @@ import {
   disposeScenery,
   clearKeepOuts,
   solidPushOut,
+  inShadowBox,
 } from '../world/scenery.js';
 // a hull is kept out of houses and boulders (resolveTankCollisions): three
 // discs along its centreline, the shove for each comes back in hullShove
@@ -42,7 +43,7 @@ import { Tank } from '../vehicles/tankEntity.js';
 // still landing in tankEntity.js, and a missing named import would break the
 // module link outright rather than degrade
 import * as tankMod from '../vehicles/tankEntity.js';
-import { TANK_SPECS, shellPenAt } from '../vehicles/tanks.js';
+import { TANK_SPECS, shellPenAt, gateTankShadows, installShadowProxyGate } from '../vehicles/tanks.js';
 import { Plane } from '../vehicles/planeEntity.js';
 import { PLANE_SPECS, displaySpeedKmh } from '../vehicles/planes.js';
 import { AAGun } from '../vehicles/groundUnits.js';
@@ -194,6 +195,17 @@ const smokeAt = new THREE.Vector3();
 // rather than one per shot
 const tmpMat = new THREE.Matrix4();
 
+// perf (wave 5): a unit's marker text, rebuilt only when the arrow or the
+// rounded range changes, so a steady frame builds no strings for the HUD
+function unitMarkLabel(unit, arrow, metres) {
+  if (unit._markArrow !== arrow || unit._markDist !== metres) {
+    unit._markArrow = arrow;
+    unit._markDist = metres;
+    unit._markLabel = `<span class="arrow">${arrow}</span>${metres}m`;
+  }
+  return unit._markLabel;
+}
+
 // terrain.js is allowed to grow a surface table underneath us; until it does,
 // every vehicle drives on the map preset's own going.
 const terrainSurface =
@@ -308,6 +320,8 @@ const PLANE_MODULE_ROWS = [
 export class CombinedBattle {
   constructor(renderer, playerType, playerSpecId, hud, onEnd) {
     this.renderer = renderer;
+    // perf2: tank shadow proxies are drawn by the shadow pass only (tanks.js)
+    installShadowProxyGate(renderer);
     this.hud = hud;
     this.onEnd = onEnd;
     this.finished = false;
@@ -926,6 +940,7 @@ export class CombinedBattle {
       const wasBurning = tank.burning;
       if (resample && tank.alive) this.sampleSurface(tank);
       tank.update(dt);
+      gateTankShadows(tank, dt, inShadowBox);
       if (tank.alive) {
         // F6: a moving hull flattens saplings and fences. Only while actually
         // rolling, so a parked tank does not re-query the prop grid every frame.
@@ -1120,7 +1135,7 @@ export class CombinedBattle {
       o.type = 'tank';
       o.moving = Math.abs(t.speed) > 0.4;
       o.shift = shifting && !t.wasShifting;
-      updateEngine('t' + t.id, o);
+      updateEngine(t._engineId || (t._engineId = 't' + t.id), o);
       t.wasShifting = shifting;
     }
     for (const pl of this.planes) {
@@ -1131,7 +1146,7 @@ export class CombinedBattle {
       o.type = 'plane';
       o.moving = true;
       o.shift = false;
-      updateEngine('p' + pl.id, o);
+      updateEngine(pl._engineId || (pl._engineId = 'p' + pl.id), o);
     }
   }
 
@@ -1232,6 +1247,11 @@ export class CombinedBattle {
 
     p.throttleInput = (input.down('KeyW') ? 1 : 0) + (input.down('KeyS') ? -1 : 0);
     p.steerInput = (input.down('KeyA') ? 1 : 0) + (input.down('KeyD') ? -1 : 0);
+    // touch hook (core/touch.js): the analog left stick; right = D = -1
+    if (input.stick) {
+      p.throttleInput = input.stick.y;
+      p.steerInput = -input.stick.x;
+    }
 
     const dir = tmpV.set(
       Math.sin(this.camYaw) * Math.cos(this.camPitch),
@@ -1340,8 +1360,11 @@ export class CombinedBattle {
 
     // combined controls: keys own their axis, mouse instructor covers the
     // rest; keyboard-only flying releases the instructor entirely
-    const kRoll = (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0);
-    const kPitch = (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0);
+    // touch hook: the analog left stick owns roll and pitch like held keys
+    // (push = nose down, as W)
+    const ts = input.stick;
+    const kRoll = ts ? ts.x : (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0);
+    const kPitch = ts ? ts.y : (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0);
     const kYaw = (input.down('KeyQ') ? 1 : 0) - (input.down('KeyE') ? 1 : 0);
     const keysHeld = kRoll !== 0 || kPitch !== 0 || kYaw !== 0;
     const mouseRecent = this.followDelay > 0;
@@ -2338,13 +2361,16 @@ export class CombinedBattle {
   resolveTankCollisions() {
     // filled in place: this runs every frame beside the other hot loops that
     // were already careful not to allocate
+    // perf2: written by index with its own count. `list.length = 0` hands the
+    // backing store back and every push then grows a new one, every frame.
     const list = this._collideList;
-    list.length = 0;
-    for (const t of this.tanks) list.push(t);
-    for (const w of this.wrecks) if (!w.isAircraft) list.push(w);
-    for (let i = 0; i < list.length; i++) {
+    let n = 0;
+    for (let i = 0; i < this.tanks.length; i++) list[n++] = this.tanks[i];
+    for (let i = 0; i < this.wrecks.length; i++) if (!this.wrecks[i].isAircraft) list[n++] = this.wrecks[i];
+    for (let i = n; i < list.length && list[i] !== null; i++) list[i] = null;
+    for (let i = 0; i < n; i++) {
       const a = list[i];
-      for (let j = i + 1; j < list.length; j++) {
+      for (let j = i + 1; j < n; j++) {
         const b = list[j];
         const dx = b.position.x - a.position.x;
         const dz = b.position.z - a.position.z;
@@ -2975,8 +3001,16 @@ export class CombinedBattle {
     return Math.hypot(pos.x - zone.x, pos.z - zone.z);
   }
 
+  // perf2: squared distances, indexed loops (no boxed float returned per
+  // zone per tank per frame from distToZone)
   zoneAt(pos) {
-    for (const z of this.zones) if (this.distToZone(pos, z) <= z.r) return z;
+    const zones = this.zones;
+    for (let i = 0; i < zones.length; i++) {
+      const z = zones[i];
+      const dx = pos.x - z.x;
+      const dz = pos.z - z.z;
+      if (dx * dx + dz * dz <= z.r * z.r) return z;
+    }
     return null;
   }
 
@@ -2986,9 +3020,13 @@ export class CombinedBattle {
     for (const zone of this.zones) {
       let allies = 0;
       let enemies = 0;
-      for (const t of this.tanks) {
+      const r2 = zone.r * zone.r;
+      for (let i = 0; i < this.tanks.length; i++) {
+        const t = this.tanks[i];
         if (!t.alive) continue;
-        if (this.distToZone(t.position, zone) < zone.r) {
+        const dx = t.position.x - zone.x;
+        const dz = t.position.z - zone.z;
+        if (dx * dx + dz * dz < r2) {
           if (t.team === 0) allies++;
           else enemies++;
         }
@@ -3045,7 +3083,9 @@ export class CombinedBattle {
     let best = this.zones[0];
     let bestD = Infinity;
     for (const z of this.zones) {
-      const d = this.distToZone(p.position, z);
+      const dx = p.position.x - z.x;
+      const dz = p.position.z - z.z;
+      const d = dx * dx + dz * dz;
       if (d < bestD) {
         bestD = d;
         best = z;
@@ -3973,18 +4013,23 @@ export class CombinedBattle {
       const proj = capPos.project(this.camera);
       const capVisible = proj.z < 1 && Math.abs(proj.x) < 1 && Math.abs(proj.y) < 1;
       const cls = zone.owner === 0 ? 'cap ally' : zone.owner === 1 ? 'cap enemy' : 'cap';
+      if (zone._markId === undefined) {
+        zone._markId = `cap${zone.key}`;
+        zone._markText = `◈ ${zone.key}`;
+      }
       hud.setMarker(
-        `cap${zone.key}`, cls,
+        zone._markId, cls,
         (proj.x * 0.5 + 0.5) * w, (-proj.y * 0.5 + 0.5) * h,
-        `◈ ${zone.key}`, capVisible,
+        zone._markText, capVisible,
       );
     }
   }
 
   markUnit(unit, p, eye, w, h, vision = 1) {
     const hud = this.hud;
-    const id = `t${unit.isAircraft ? 'p' : 'g'}${unit.id}`;
-    const leadId = `lead${unit.id}`;
+    // perf (wave 5): ids and label text cached on the unit (unitMarkLabel)
+    const id = unit._markId || (unit._markId = `t${unit.isAircraft ? 'p' : 'g'}${unit.id}`);
+    const leadId = unit._leadId || (unit._leadId = `lead${unit.id}`);
     if (!unit.alive || unit === p) {
       hud.setMarker(id, '', 0, 0, '', false);
       if (unit.isAircraft) hud.setMarker(leadId, '', 0, 0, '', false);
@@ -4022,7 +4067,7 @@ export class CombinedBattle {
           id, cls,
           (proj.x * 0.5 + 0.5) * w,
           (-proj.y * 0.5 + 0.5) * h,
-          `<span class="arrow">${arrow}</span>${Math.round(dist)}m`,
+          unitMarkLabel(unit, arrow, Math.round(dist)),
           true,
         );
       } else {

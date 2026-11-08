@@ -205,9 +205,39 @@ const DS_LADDER = [[false, 0, false], [true, 0, false], [true, 1, false], [true,
 // level along it, and level enough across it for the wingtips — and the
 // furthest it looks for one.
 const DITCH_SLIDE = 170;
-const DITCH_SLOPE = 0.06;
+// the stretch of it the aeroplane may still be airborne over (dsSiteScore)
+const DITCH_TD = 105;
+// (0.08 at a belly-landing 30 m/s is a 2.4 m/s closure on top of the ~1 m/s
+// touchdown sink, inside the slide's 3.8)
+const DITCH_SLOPE = 0.08;
+// ...for a type that glides at 30 m/s: the touchdown zone allows VS_K / vT
+// (the slope met at flying speed is a closure of speed x slope)
+const VS_K = 2.4;
 const DITCH_CROSS = 0.06;
 const DITCH_SEARCH = 2600;
+// Beyond the slide: the ground an aeroplane that floats long, or slides on
+// further than planned, runs into next. It is only asked not to be a wall —
+// "Crashed into rising ground" was most of the forced landings lost, every one
+// of them past the end of the 170 m that had been looked at.
+const DITCH_RUNOUT = 330;
+const DITCH_SLOPE_FAR = 0.2;
+// Site-search work done per frame (dsScanStep): candidate touchdown points
+// tested. A whole search is ~600 of them and used to run in one frame
+// (4-31 ms); at this rate it takes ~0.4 s and costs well under a millisecond
+// a frame.
+const DITCH_SCAN_BUDGET = 24;
+// Below this height a turn onto a new bearing costs more than the ground it
+// buys: the turn penalty rises, and an unreachable site is dropped for the
+// best one ahead.
+const DITCH_LOW = 90;
+// Height a forced-landing site would be arrived at with that the final cannot
+// take off (dsScanCandidate): past UNB_S metres, UNB_K a metre on the score
+// (capped at UNB_CAP metres). Arrived high, it floats on over ground nobody
+// looked at — most of the forced landings lost came down 150-250 m past the
+// touchdown point.
+const UNB_K = 0.12;
+const UNB_S = 6;
+const UNB_CAP = 50;
 
 const TWO_PI = Math.PI * 2;
 function mod2pi(a) {
@@ -2163,6 +2193,9 @@ export class PlaneAI {
     g.R = (g.vT * g.vT) / (GRAV * Math.tan(DS_BANK));
     g.tanStr = p.glideTanN(g.vT, 1, 0, 0, false);
     g.tanTurn = p.glideTanN(g.vT, 1 / Math.cos(DS_BANK), 0, 0, false);
+    // (wheels up, the flap down and the airbrake out: the forced landing's
+    // steepest straight glide, dsDitch)
+    g.tanFull = Math.max(g.tanStr, p.glideTanN(g.vT, 1, 2, 0, true));
     g.Rt = (g.vT * g.vT) / (GRAV * Math.tan(DS_BANK_TIGHT));
     g.tanTurnT = p.glideTanN(g.vT, 1 / Math.cos(DS_BANK_TIGHT), 0, 0, false);
     g.uK = clamp(g.vT * DS_UK_K, DS_UK_MIN, DS_UK_MAX);
@@ -2573,7 +2606,7 @@ export class PlaneAI {
   // `vyCmd`, a sink rate instead (the round-out) — and the ball in the middle.
   // The pitch goes through planeEntity.pitchCmdForAoa, never past 0.85 of the
   // stalling angle, and the structural limiter still has the last word.
-  dsPilot(dt, phiC, vT, vyCmd = null) {
+  dsPilot(dt, phiC, vT, vyCmd = null, flare = false) {
     const r = this.rtb;
     const p = this.plane;
     const v = Math.max(p.speed, 1);
@@ -2592,8 +2625,10 @@ export class PlaneAI {
     if (vyCmd != null) n = Math.cos(gam) / cphi + (vyCmd - p.vel.y) * 0.12;
     else n = Math.cos(gam) / cphi + (0.55 * (v - vT) + 2 * r.dsAcc) / GRAV;
     const vr = v / Math.max(p.stallSpeedNow(), 1);
-    n = clamp(n, 0.2, Math.min(2.5, 0.85 * vr * vr));
-    const aoaC = Math.min(p.aoaForG(n), p.stallAoA() * 0.85);
+    // (the forced landing's round-out may use more of the wing: a few
+    // metres up, the sink is the danger, not the stall)
+    n = clamp(n, 0.2, Math.min(2.5, (flare ? 0.95 : 0.85) * vr * vr));
+    const aoaC = Math.min(p.aoaForG(n), p.stallAoA() * (flare ? 0.93 : 0.85));
     p.controls.pitch = moveToward(p.controls.pitch, p.pitchCmdForAoa(aoaC, 0.3), 8 * dt);
     p.controls.yaw = moveToward(p.controls.yaw, clamp(p.slip * 4, -1, 1), 10 * dt);
   }
@@ -2617,49 +2652,122 @@ export class PlaneAI {
   // How good a forced-landing site is (lower is better), or null if it is no
   // site at all: the touchdown at (x, z), the slide along (sx, sz) with
   // (lx, lz) its left. The ground has to be clear of every field's platform
-  // and embankment and of the map's walls, not rising more than DITCH_SLOPE
-  // along the DITCH_SLIDE metres of the slide (a slope met at the glide's sink
-  // is the crash) nor leaning more than DITCH_CROSS across it (a wingtip),
-  // and not climbing steeply in the last 60 m short of it.
-  dsSiteScore(x, z, sx, sz, lx, lz, hw, strict = true) {
+  // and embankment, its buildings and of the map's walls, and is judged in
+  // three zones, each by what kills there:
+  //   - the touchdown zone (the first DITCH_TD m): the aeroplane may still be
+  //     in the air anywhere along it, and ground rising more than DITCH_SLOPE
+  //     is met at flying speed — the closure that crashes it;
+  //   - the rest of the slide (to DITCH_SLIDE): on the belly and slowing, it
+  //     can take twice that;
+  //   - the run-out beyond (to DITCH_RUNOUT): no wall, no drop over an edge.
+  // Across it, the lean may not come near what the wingtips clear (tol: the
+  // type's own tip height over the belly, per metre of half-span), and the
+  // last 60 m short of the touchdown must not climb steeply.
+  // (The old single test, 0.06 over all 170 m, failed four candidates in
+  // five on this world's rolling ground and left four forced landings in five
+  // on a lenient last-resort site — where nineteen of twenty crashes were.)
+  dsSiteScore(x, z, sx, sz, lx, lz, hw, strict = true, tol = 0.2, desperate = false) {
     const surf = this._dsSurf || (this._dsSurf = { y: 0, kind: '', af: null });
     let prev = null;
-    let up = 0;
+    let wallK = Infinity;
+    let upTd = 0;
+    let upSl = 0;
+    let upFar = 0;
+    let downFar = 0;
     let down = 0;
     let cross = 0;
     let field = 0;
-    for (let k = -150; k <= DITCH_SLIDE; k += 15) {
+    let crest = 0;
+    let downTd = 0;
+    const ap = this._dsAp || (this._dsAp = new Float64Array(10));
+    // (the slope met at flying speed is a closure of speed x slope: a fast
+    // type's touchdown zone has to be flatter — dsScanBegin sets it)
+    const slTd = this._dsSlTd || DITCH_SLOPE;
+    for (let k = -150; k <= DITCH_RUNOUT; k += 15) {
       const px = x + sx * k;
       const pz = z + sz * k;
-      if (Math.abs(px) > 1100 || Math.abs(pz) > 1100) return null;
+      if (Math.abs(px) > 1100 || Math.abs(pz) > 1100) {
+        // (the wall of the map: never inside the slide or the first 120 m
+        // beyond it — an aeroplane that floats on meets it at flying speed)
+        // (a desperate search, dsScanBegin(true): past the touchdown zone it
+        // is only dear — the wall met sliding beats the ground met flying)
+        if (k <= (desperate ? DITCH_TD + 30 : DITCH_SLIDE + 120)) return null;
+        wallK = k;
+        break;
+      }
       const s = groundSurfaceAt(px, pz, surf);
       const h = s.y;
       if (s.af && k >= -60) field = 1;
       // a building, a wall, a parked aeroplane anywhere near the slide (or
-      // under the last of the line in to it)
+      // under the last of the line in to it, or in the run-out beyond it)
       if (obstacleTopAt(px, pz, hw + 12) > h - 1) return null;
+      // The ground under the line in: a crest above the slope the round-out
+      // can come down at (2.6 m/s, ~0.09) is a float — the aeroplane gets
+      // down to a metre over the top, the ground falls away under it, and it
+      // comes down a long way on. (Dear, not barred: barring it left too
+      // many on the lenient last-resort pick.)
+      if (k < 0) ap[(k + 150) / 15] = h;
+      else if (k === 0) {
+        for (let i = 0; i < 10; i++) crest = Math.max(crest, ap[i] - h - (150 - i * 15) * 0.09);
+      }
       if (k < -60) continue;
       if (prev !== null) {
         const sl = (h - prev) / 15;
-        if (k > 0) {
-          up = Math.max(up, sl);
+        if (k > DITCH_SLIDE) {
+          upFar = Math.max(upFar, sl);
+          downFar = Math.max(downFar, -sl);
+        } else if (k > 0) {
+          if (k <= DITCH_TD) {
+            // (and falling away under the touchdown zone: a float)
+            upTd = Math.max(upTd, sl);
+            downTd = Math.max(downTd, -sl);
+          } else upSl = Math.max(upSl, sl);
           down = Math.max(down, -sl);
         } else if (sl > 0.15 && strict) {
           return null;
         }
       }
       prev = h;
-      if (strict && up > DITCH_SLOPE) return null;
+      if (strict && (upTd > slTd || upSl > slTd * 2 || upFar > DITCH_SLOPE_FAR || downFar > 0.3)) return null;
     }
-    for (let k = 0; k <= DITCH_SLIDE; k += 30) {
+    const crossMax = Math.max(DITCH_CROSS * 0.8, Math.min(0.11, tol * 0.5));
+    for (let k = 0; k <= DITCH_RUNOUT; k += 30) {
       const px = x + sx * k;
       const pz = z + sz * k;
+      if (Math.abs(px) > 1100 || Math.abs(pz) > 1100) break;
       const c = Math.abs(groundHeightAt(px + lx * hw, pz + lz * hw) - groundHeightAt(px - lx * hw, pz - lz * hw)) / (2 * hw);
-      cross = Math.max(cross, c);
-      if (strict && cross > DITCH_CROSS) return null;
+      // (the run-out is allowed half as much again: the aeroplane is slowing)
+      const cc = k > DITCH_SLIDE ? c / 1.5 : c;
+      cross = Math.max(cross, cc);
+      if (strict && cross > crossMax) return null;
     }
-    // (a field's own platform is level, but a wreck on it shuts a lane)
-    return up * 25 + cross * 12 + Math.max(0, down - 0.12) * 4 + field * 1.5;
+    // (a field's own platform is level, but a wreck on it shuts a lane;
+    // ground falling away steeply is a sink the round-out has to follow down
+    // and take out again at the bottom; a lean near what the tips clear is
+    // the wingtip — all dear on the lenient last-resort pick)
+    return upTd * 25 + upSl * 10 + upFar * 5 + cross * 12 + Math.max(0, cross - 0.45 * tol) * 70 +
+      Math.max(0, down - 0.12) * 15 + Math.max(0, downFar - 0.2) * 8 + field * 1.5 + crest * 1.0 + Math.max(0, downTd - 0.07) * 20 +
+      Math.max(0, DITCH_SLIDE + 120 - wallK) * 0.06;
+  }
+
+  // Another aeroplane's forced landing already on this ground: its slide,
+  // or this one's across its touchdown. Two picking the same flattest field
+  // met on it.
+  dsOthersAt(x, z, sx, sz) {
+    const me = this.plane;
+    for (const o of this.battle.planes || []) {
+      const S = o._dsSite;
+      if (o === me || !S || !o.alive) continue;
+      const ox = Math.sin(S.psi);
+      const oz = Math.cos(S.psi);
+      const al = (x - S.x) * ox + (z - S.z) * oz;
+      const cr = (x - S.x) * oz - (z - S.z) * ox;
+      if (al > -80 && al < DITCH_SLIDE + 90 && Math.abs(cr) < 50) return 4;
+      const al2 = (S.x - x) * sx + (S.z - z) * sz;
+      const cr2 = (S.x - x) * sz - (S.z - z) * sx;
+      if (al2 > -80 && al2 < DITCH_SLIDE + 90 && Math.abs(cr2) < 50) return 4;
+    }
+    return 0;
   }
 
   // Away from the fields: a touchdown, or the line in to it, within reach of
@@ -2685,52 +2793,162 @@ export class PlaneAI {
   // with a little against turning and against arriving with height to throw
   // away (the touchdown is where the glide ends, not the first flat ground it
   // passes over).
+  //
+  // The search is a scan (dsScanBegin / dsScanStep) that can be spread over
+  // frames: dsDitch runs DITCH_SCAN_BUDGET candidates a frame and keeps flying
+  // the site it has until the scan is done. dsPickSite() runs one to the end.
   dsPickSite() {
+    const sc = this.dsScanBegin();
+    while (!this.dsScanStep(sc, Infinity));
+    return sc.best;
+  }
+
+  dsScanBegin(desperate = false) {
     const p = this.plane;
     const pos = p.position;
     const g = this.dsGlideParams();
     const v = p.speed;
-    const psi0 = this.dsHeading();
-    const extra = (v * v - g.vT * g.vT) / (2 * GRAV);
-    const hw = Math.max(3, (p.spec.span || 12) * 0.5 - 0.5);
-    let best = null;
-    for (let k = -8; k <= 8; k++) {
-      const dpsi = k * 0.2618;
-      const psi = psi0 + dpsi;
-      const sx = Math.sin(psi);
-      const sz = Math.cos(psi);
-      const turn = Math.abs(dpsi) * g.R;
-      // (the turn onto the bearing moves the start of the straight out to
-      // its side; near enough the arc's chord, half way round)
-      const ox = pos.x + Math.sin(psi0 + dpsi * 0.5) * turn * 0.9;
-      const oz = pos.z + Math.cos(psi0 + dpsi * 0.5) * turn * 0.9;
-      for (let D = 75; D <= DITCH_SEARCH; D += 75) {
-        const x = ox + sx * D;
-        const z = oz + sz * D;
-        if (Math.abs(x) > 1080 || Math.abs(z) > 1080) break;
-        const gy = groundHeightAt(x, z);
-        const hAt = pos.y + extra - (turn * g.tanTurn + D * g.tanStr) * 1.08 - gy;
-        if (hAt < 10) break;
-        // a hangar or a tower in the way of the glide there (and half way
-        // back to the last sample: a building is narrower than the step)
-        if (obstacleTopAt(x, z, 15) > gy + hAt - 12) break;
-        const mx = x - sx * 37;
-        const mz = z - sz * 37;
-        if (obstacleTopAt(mx, mz, 15) > groundHeightAt(mx, mz) + hAt - 8) break;
-        const extraScore = Math.max(0, hAt - 45) * 0.03 + Math.abs(dpsi) * 0.25 + (hAt < 18 ? (18 - hAt) * 0.05 : 0) +
-          this.dsNearField(x, z, sx, sz);
-        const sc = this.dsSiteScore(x, z, sx, sz, Math.cos(psi), -Math.sin(psi), hw);
-        if (sc === null) {
-          // nothing that passes: the least bad ground, as a last resort
-          if (best && !best.lenient) continue;
-          const sl = this.dsSiteScore(x, z, sx, sz, Math.cos(psi), -Math.sin(psi), hw, false);
-          if (sl === null) continue;
-          const score = sl + extraScore;
-          if (!best || score < best.score) best = { x, z, psi, score, hAt, D, t: this.clock, locked: false, lenient: true };
-          continue;
+    const agl = pos.y - groundHeightAt(pos.x, pos.z);
+    return {
+      desperate, hMin: desperate ? 3 : 10,
+      k: -8, D: 75, best: null, done: false, bearing: null, pass: 0, off: 0, dOff: 0,
+      x: pos.x, y: pos.y, z: pos.z, psi0: this.dsHeading(), g,
+      extra: (v * v - g.vT * g.vT) / (2 * GRAV),
+      hw: Math.max(3, (p.spec.span || 12) * 0.5 - 0.5),
+      // 2.4 m/s of closure from the ground at the glide's speed, on top of
+      // the touchdown's own sink, inside the slide's 3.8 (0.08 at 30 m/s)
+      slTd: clamp(VS_K / Math.max(20, g.vT), 0.05, DITCH_SLOPE),
+      // the cross-slope the wingtips clear, wings level, on the belly
+      tol: p.gearGeo ? Math.max(0.06, (p.gearGeo.tipY - p.gearGeo.bellyY) / Math.max(1, p.gearGeo.tipX)) : 0.15,
+      // low down, a turn is the most expensive thing there is
+      turnK: agl < DITCH_LOW ? 0.25 + 0.9 * (1 - Math.max(0, agl - 20) / (DITCH_LOW - 20)) : 0.25,
+    };
+  }
+
+  // Advance a scan by up to budget candidates; true once it is complete.
+  dsScanStep(sc, budget) {
+    const g = sc.g;
+    while (budget > 0 && sc.k <= 8) {
+      if (!sc.bearing) {
+        const dpsi = (sc.k + sc.off) * 0.2618;
+        const psi = sc.psi0 + dpsi;
+        const turn = Math.abs(dpsi) * g.R;
+        // (the turn onto the bearing moves the start of the straight out to
+        // its side; near enough the arc's chord, half way round)
+        sc.bearing = {
+          dpsi, psi, turn,
+          sx: Math.sin(psi), sz: Math.cos(psi),
+          lx: Math.cos(psi), lz: -Math.sin(psi),
+          ox: sc.x + Math.sin(sc.psi0 + dpsi * 0.5) * turn * 0.9,
+          oz: sc.z + Math.cos(sc.psi0 + dpsi * 0.5) * turn * 0.9,
+        };
+        sc.D = 75 - sc.dOff;
+      }
+      const b = sc.bearing;
+      const D = sc.D;
+      sc.D += 75;
+      budget--;
+      let stop = D > DITCH_SEARCH;
+      if (!stop) {
+        const x = b.ox + b.sx * D;
+        const z = b.oz + b.sz * D;
+        if (Math.abs(x) > 1080 || Math.abs(z) > 1080) stop = true;
+        else {
+          const gy = groundHeightAt(x, z);
+          const hAt = sc.y + sc.extra - (b.turn * g.tanTurn + D * g.tanStr) * 1.08 - gy;
+          const mx = x - b.sx * 37;
+          const mz = z - b.sz * 37;
+          // out of height there, or a hangar or a tower in the way of the
+          // glide (and half way back to the last sample: a building is
+          // narrower than the step)
+          if (hAt < sc.hMin || obstacleTopAt(x, z, 15) > gy + hAt - 12 ||
+            obstacleTopAt(mx, mz, 15) > groundHeightAt(mx, mz) + hAt - 8) {
+            stop = true;
+          } else {
+            this.dsScanCandidate(sc, b, x, z, hAt, D);
+          }
         }
-        const score = sc + extraScore;
-        if (!best || best.lenient || score < best.score) best = { x, z, psi, score, hAt, D, t: this.clock, locked: false };
+      }
+      if (stop) {
+        sc.bearing = null;
+        sc.k++;
+      }
+    }
+    // Nothing that passes on the coarse grid: once more between its lines
+    // (half-way bearings, half-way distances) before settling for the
+    // least bad ground — the lenient picks were where the crashes were.
+    if (sc.k > 8 && sc.pass === 0 && (!sc.best || sc.best.lenient)) {
+      sc.pass = 1;
+      sc.k = -8;
+      sc.off = 0.5;
+      sc.dOff = 37;
+      sc.bearing = null;
+      return false;
+    }
+    sc.done = sc.k > (sc.pass === 1 ? 7 : 8);
+    return sc.done;
+  }
+
+  dsScanCandidate(sc, b, x, z, hAt, D) {
+    const best = sc.best;
+    // (the height at the touchdown the final cannot take off: UNB_K)
+    const g = sc.g;
+    const burn = (D + b.turn * 0.3) * Math.max(0.02, g.tanFull - g.tanStr) * 0.75;
+    const unb = Math.min(UNB_CAP, Math.max(0, hAt - UNB_S - burn));
+    const extraScore = Math.max(0, hAt - 45) * 0.03 + Math.abs(b.dpsi) * sc.turnK + (hAt < 18 ? (18 - hAt) * 0.05 : 0) +
+      unb * UNB_K + this.dsNearField(x, z, b.sx, b.sz) +
+      this.dsOthersAt(x, z, b.sx, b.sz);
+    // (a candidate that cannot beat the best even with perfect ground is
+    // not worth sampling)
+    if (best && !best.lenient && extraScore >= best.score) return;
+    this._dsSlTd = sc.slTd;
+    const scv = this.dsSiteScore(x, z, b.sx, b.sz, b.lx, b.lz, sc.hw, true, sc.tol);
+    if (scv === null) {
+      // nothing that passes: the least bad ground, as a last resort
+      if (best && !best.lenient) return;
+      const sl = this.dsSiteScore(x, z, b.sx, b.sz, b.lx, b.lz, sc.hw, false, sc.tol, sc.desperate);
+      if (sl === null) return;
+      const score = sl + extraScore;
+      if (!best || score < best.score) sc.best = { x, z, psi: b.psi, score, hAt, D, t: this.clock, locked: false, lenient: true };
+      return;
+    }
+    const score = scv + extraScore;
+    if (!best || best.lenient || score < best.score) sc.best = { x, z, psi: b.psi, score, hAt, D, t: this.clock, locked: false };
+  }
+
+  // Nowhere in reach passes even the lenient test: the heading, within a
+  // gentle turn either way, with the most open ground ahead before the wall
+  // of the map, a building or a hillside the glide would meet. (Straight on
+  // was, more often than not, straight on into the wall or the field the
+  // aeroplane had been trying to reach: most of those that ended this way
+  // ended at the edge of the map.)
+  dsOpenHeading() {
+    const p = this.plane;
+    const pos = p.position;
+    const hd = this.dsHeading();
+    const hw = Math.max(3, (p.spec.span || 12) * 0.5);
+    const tan = Math.max(0.08, this.dsGlideParams().tanStr);
+    let best = hd;
+    let bestScore = -Infinity;
+    for (let i = -8; i <= 8; i++) {
+      const d = i * 0.2;
+      const sx = Math.sin(hd + d);
+      const sz = Math.cos(hd + d);
+      let clear = 0;
+      for (let k = 20; k <= 400; k += 20) {
+        const x = pos.x + sx * k;
+        const z = pos.z + sz * k;
+        if (Math.abs(x) > 1140 || Math.abs(z) > 1140) break;
+        const gy = groundHeightAt(x, z);
+        if (obstacleTopAt(x, z, hw + 8) > gy - 1) break;
+        // (ground up through the glide there: a hillside, not a field)
+        if (gy > pos.y - k * tan * 0.6 - 2) break;
+        clear = k;
+      }
+      const score = clear - Math.abs(d) * 60;
+      if (score > bestScore) {
+        bestScore = score;
+        best = hd + d;
       }
     }
     return best;
@@ -2757,23 +2975,62 @@ export class PlaneAI {
     if (p.gear && !p.gearGone) p.toggleGear();
     const g0 = groundHeightAt(pos.x, pos.z);
     const agl = pos.y - g0;
-    if (!r.dsSite || (!r.dsSite.locked && this.clock - r.dsSite.t > 1.5)) {
-      const ns = this.dsPickSite();
+    // The site search, a few candidates a frame (dsScanStep): started when
+    // there is no site, when an unlocked one is 1.5 s old, or when the one
+    // being flown to has gone out of reach; the old site is flown until the
+    // scan has an answer.
+    if (!r.dsScan && (!r.dsSite || r.dsRescan || (!r.dsSite.locked && this.clock - r.dsSite.t > 1.5))) {
+      r.dsScan = this.dsScanBegin();
+    }
+    if (r.dsScan && this.dsScanStep(r.dsScan, DITCH_SCAN_BUDGET)) {
+      const ns = r.dsScan.best;
+      const forced = r.dsRescan;
+      const wasDesperate = r.dsScan.desperate;
+      r.dsScan = null;
+      r.dsRescan = false;
+      const cur = r.dsSite;
+      const curAlong = cur ? (pos.x - cur.x) * Math.sin(cur.psi) + (pos.z - cur.z) * Math.cos(cur.psi) : 0;
       if (ns) r.dsSite = ns;
-      else if (r.dsSite) r.dsSite.t = this.clock;
+      else if (cur && forced && !wasDesperate) {
+        // nothing in reach that passes even the lenient test: once more,
+        // down to the last few metres of height and with the wall of the
+        // map only dear past the touchdown zone (the old site is flown
+        // meanwhile)
+        r.dsScan = this.dsScanBegin(true);
+        r.dsRescan = true;
+      } else if (cur && forced && cur.onLine && !cur.lenient && curAlong < DITCH_RUNOUT - 40) {
+        // ...and still nothing, but on the line of a proper site and inside
+        // the ground looked at beyond it: down on that
+        cur.t = this.clock;
+      } else if (cur && forced) {
+        // nothing in reach at all: straight on, wings level, onto whatever
+        // is ahead
+        const hd = this.dsOpenHeading();
+        r.dsSite = { x: pos.x + Math.sin(hd) * 60, z: pos.z + Math.cos(hd) * 60, psi: hd, score: 99, hAt: agl, D: 60,
+          t: this.clock, locked: true, onLine: true, lenient: true };
+      } else if (r.dsSite) r.dsSite.t = this.clock;
     }
     const s = r.dsSite;
+    // (published, so another forced landing nearby picks other ground:
+    // dsOthersAt)
+    p._dsSite = s;
     const psi = this.dsHeading();
     let phi = 0;
     let vyCmd = null;
     if (s) {
       const sx = Math.sin(s.psi);
       const sz = Math.cos(s.psi);
-      const ex = s.x - sx * 120;
-      const ez = s.z - sz * 120;
+      // The straight in: 120 m, or longer when there is height in hand that
+      // the orbit would not take (it costs a whole lap), so the excess goes on
+      // the flap and the airbrake down a longer final instead of arriving
+      // tens of metres high over the touchdown and floating on past the
+      // ground that was looked at (dsDitch below sets s.lEntry).
+      const lEntry = s.lEntry || 120;
+      const ex = s.x - sx * lEntry;
+      const ez = s.z - sz * lEntry;
       const along = (pos.x - s.x) * sx + (pos.z - s.z) * sz; // < 0 short of the touchdown
       const cross = (pos.x - s.x) * sz - (pos.z - s.z) * sx; // > 0 left of the line
-      const onLine = along > -160 && Math.abs(cross) < 40 && Math.abs(wrapAngle(psi - s.psi)) < 0.5;
+      const onLine = along > -(lEntry + 40) && Math.abs(cross) < 40 && Math.abs(wrapAngle(psi - s.psi)) < 0.5;
       if (onLine || s.onLine) {
         // down the line, a course back onto it in proportion to the offset
         s.onLine = true;
@@ -2787,6 +3044,16 @@ export class PlaneAI {
         // looked at, and beyond it, sooner or later, the wall of the map.
         const hTd = pos.y - groundHeightAt(s.x, s.z) - p.rideHeight(0);
         const togo = -along;
+        // past the touchdown point still flying: put it down on the ground
+        // that was looked at, not float on over what was not
+        s.past = togo < -25;
+        // ...and well past it still high, or about to run off the end of
+        // the ground looked at: a new site, from here, ahead
+        if (!r.dsScan && this.clock - (r.dsRescanT || -9) > 1.5 &&
+          ((togo < -60 && hTd > 14) || togo < -(DITCH_RUNOUT - 60))) {
+          r.dsRescan = true;
+          r.dsRescanT = this.clock;
+        }
         const tanD = hTd / Math.max(togo, 40);
         const rip = p.spec.flapRip || [70, 55, 42];
         if (tanD > g.tanStr * 1.25 || togo < 0) {
@@ -2804,10 +3071,23 @@ export class PlaneAI {
       } else {
         const path = dubins(pos.z, pos.x, psi, ez, ex, s.psi, g.R, r.dsWord2 || null, {});
         r.dsWord2 = path.type;
-        const need = (path.arc * g.tanTurn + path.straight * g.tanStr) * 1.05 + 120 * g.tanStr;
+        const need = (path.arc * g.tanTurn + path.straight * g.tanStr) * 1.05 + lEntry * g.tanStr;
         const spare = pos.y + (v * v - g.vT * g.vT) / (2 * GRAV) - groundHeightAt(s.x, s.z) - need;
-        if (s.orbit == null && spare > 60) s.orbit = true;
+        if (!s.orbit) {
+          const gain = Math.max(0.03, g.tanFull - g.tanStr);
+          const want = clamp(lEntry + Math.max(0, spare - 8) / gain * 0.8 - (spare < 0 ? -spare / gain : 0), 120, 700);
+          s.lEntry = lEntry + (want - lEntry) * Math.min(1, dt * 1.5);
+        }
+        if (s.orbit == null && spare > 60 + (700 - lEntry) * Math.max(0, g.tanFull - g.tanStr) * 0.8) s.orbit = true;
         if (s.orbit === true && spare < 20) s.orbit = false;
+        // Out of reach of it now (rising ground under the glide, a turn
+        // longer than planned): look again, from here. dsDitch flies on
+        // toward it until the new search is done.
+        if (spare < -12 && !r.dsScan && this.clock - (r.dsRescanT || -9) > 1) {
+          s.locked = false;
+          r.dsRescan = true;
+          r.dsRescanT = this.clock;
+        }
         if (s.orbit) {
           // a circle tangent to the line at the entry point, on its left,
           // flown left-handed so that it is heading down the line there
@@ -2839,11 +3119,58 @@ export class PlaneAI {
       vyCmd = null;
       if (r.dsSite && !r.dsSite.onLine) r.dsSite.locked = false;
     }
-    if (hBelly < Math.max(6, -(p.vel.y - vh * slope) * 1.8)) {
-      vyCmd = vh * slope - clamp(0.3 + hBelly * 0.22, 0.3, 2.2);
+    // The round-out starts where the sink can still be taken out: from the
+    // closure now down to the touchdown's ~1 m/s at the g the wing has left
+    // at this speed (dsPilot caps the load at 0.85 (v/vs)^2), plus 2 m. Low
+    // and slow, that is twice the old 1.8 s of sink.
+    const sinkRel = Math.max(0, -(p.vel.y - vh * slope));
+    let flare = false;
+    const vrr = v / Math.max(p.stallSpeedNow(), 1);
+    const aArr = GRAV * Math.max(0.06, Math.min(1.5, 0.95 * vrr * vrr) - 1);
+    const hArr = Math.max(0, sinkRel * sinkRel - 1.44) / (2 * aArr) + 2;
+    if (hBelly < Math.max(6, sinkRel * 1.8, hArr)) {
+      // A belly landing needs no flare to the stall: the slide takes any
+      // speed under 2.4 x the stall, and what kills is a float. Held at a
+      // few tenths of a metre a second the aeroplane floated hundreds of
+      // metres past the ground that had been looked at (onto rising ground,
+      // a wingtip, a stall at a metre up); it is put down at a firm metre a
+      // second instead, well inside the slide's 3.8 m/s.
+      // (and never more than 2.6 m/s down in all: ground falling away is not
+      // chased — the bottom of that slope is met at the sink it took to
+      // follow it, which was most of the "descent" crashes left)
+      // (a metre or two up, the ground half a second ahead, unsmoothed: over
+      // a crest the smoothed slope still climbs, the aeroplane balloons over
+      // the top and floats on down the far side)
+      let sl = slope;
+      if (hBelly < 3) {
+        const la = Math.max(6, vh * 0.5);
+        sl = Math.min(slope, (groundHeightAt(pos.x + (p.vel.x / vh) * la, pos.z + (p.vel.z / vh) * la) - g0) / la);
+      }
+      // The floor on the sink: 2.6 m/s — unless the ground keeps falling away
+      // for the next two seconds, in which case the floor goes down with
+      // the LEAST falling stretch of it (so wherever it flattens out the
+      // closure there is still a firm 2.4). Held at 2.6 down a long gentle
+      // slope the aeroplane closed on it at a few tenths of a metre a second
+      // and floated hundreds of metres on, onto whatever rose at the bottom.
+      let floorVy = -2.6;
+      if (hBelly < 5) {
+        let prevG = g0;
+        let sMax = -Infinity;
+        for (let i = 1; i <= 4; i++) {
+          const d = vh * 0.5 * i;
+          const gi = groundHeightAt(pos.x + (p.vel.x / vh) * d, pos.z + (p.vel.z / vh) * d);
+          sMax = Math.max(sMax, (gi - prevG) / (vh * 0.5));
+          prevG = gi;
+        }
+        floorVy = Math.min(-2.6, Math.max(-5, vh * sMax - 2.4));
+      }
+      vyCmd = Math.max(vh * sl - clamp((s && s.past ? 1.2 : 1.0) + hBelly * 0.22, 1.0, 2.4), floorVy);
+      flare = true;
       phi = 0;
+    } else if (s && s.past && vyCmd == null && hBelly < 16) {
+      vyCmd = vh * slope - 2.0;
     }
-    this.dsPilot(dt, phi, g.vT, vyCmd);
+    this.dsPilot(dt, phi, g.vT, vyCmd, flare);
   }
 
   // The glide approach's final and flare. No go-around without an engine:

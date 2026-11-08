@@ -65,6 +65,7 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
+import { townPlanFor } from './town.js';
 
 const LU_P = 4091;
 const LU_K = 6.2831853 / 170;
@@ -572,16 +573,23 @@ const NO_FEATURES = { town: null, road: [], ridges: [], treeline: null, axis: 0 
 export function landUseFor(features, preset, helpers) {
   const feat = features && typeof features === 'object' ? features : NO_FEATURES;
   const biome = biomeKeyOf(preset);
+  // the town map (world/town.js) is a different layout on the same features:
+  // it gets its own memo slot
+  const key = isTownMap(preset) ? `${biome}|town` : biome;
   let byBiome = memo.get(feat);
   if (!byBiome) {
     byBiome = new Map();
     memo.set(feat, byBiome);
   }
-  const hit = byBiome.get(biome);
+  const hit = byBiome.get(key);
   if (hit) return hit;
   const lu = buildLandUse(feat, preset, biome, helpers || {});
-  byBiome.set(biome, lu);
+  byBiome.set(key, lu);
   return lu;
+}
+
+function isTownMap(preset) {
+  return !!(preset && preset.map === 'town');
 }
 
 function buildLandUse(feat, preset, biome, helpers) {
@@ -623,9 +631,18 @@ function buildLandUse(feat, preset, biome, helpers) {
     cropWeights.push(1, 0, 0, 0, 0, 0);
   }
 
-  const town = feat.town && isNum(feat.town.x) && isNum(feat.town.z)
-    ? { x: feat.town.x, z: feat.town.z, r: isNum(feat.town.radius) ? feat.town.radius : 50 }
+  // TOWN map: the built-up area replaces the village disc everywhere the disc
+  // is read — the parcel exclusion here and in LANDUSE_GLSL (uLuWood[1..2]),
+  // the hedge gaps, the woods' and the farms' distance — so fields, hedges and
+  // woods all stop at the edge of the town in the shader and in the props.
+  const townPlan = isTownMap(preset)
+    ? townPlanFor(feat, { terrainHeight: helpers.terrainHeight, terrainSlope: helpers.terrainSlope })
     : null;
+  const town = townPlan
+    ? { x: townPlan.centre.x, z: townPlan.centre.z, r: townPlan.radius }
+    : feat.town && isNum(feat.town.x) && isNum(feat.town.z)
+      ? { x: feat.town.x, z: feat.town.z, r: isNum(feat.town.radius) ? feat.town.radius : 50 }
+      : null;
   const roadPts = (feat.road || []).filter((p) => p && isNum(p.x) && isNum(p.z)).slice(0, 5);
   const road = roadModel(roadPts);
   const rot = (x, z) => [x * ca + z * sa, z * ca - x * sa];
@@ -1114,7 +1131,11 @@ function buildLandUse(feat, preset, biome, helpers) {
     };
     const yawFacing = (fx, fz) => Math.atan2(fx, fz);
 
-    if (town && road.segs.length) {
+    if (townPlan) {
+      // the town's lots come from world/town.js, church first as the village's
+      // do; the outlying farms below still stand in the fields around it
+      for (const l of townPlan.lots) lots.push({ ...l });
+    } else if (town && road.segs.length) {
       const T = town;
       const R = T.r;
       const near = road.nearest(T.x, T.z);
@@ -1384,7 +1405,8 @@ function buildLandUse(feat, preset, biome, helpers) {
           let blocked = hRoad(x, z) < roadKeep
             || Math.hypot(x, z) < CAP_KEEP + GAP_MARGIN
             || woodAt(x, z) > 0.35;
-          if (!blocked && hedge && town && Math.hypot(x - town.x, z - town.z) < town.r + TOWN_KEEP + GAP_MARGIN) blocked = true;
+          // (the town map keeps its fences out of the streets and yards as well)
+          if (!blocked && (hedge || townPlan) && town && Math.hypot(x - town.x, z - town.z) < town.r + TOWN_KEEP + GAP_MARGIN) blocked = true;
           if (!blocked) {
             for (const l of lots) {
               if (Math.abs(l.x - x) > 40 || Math.abs(l.z - z) > 40) continue;
@@ -1657,6 +1679,8 @@ function buildLandUse(feat, preset, biome, helpers) {
     });
   };
   defineLazy('lots', () => buildLots());
+  // the street network, square and capture points of a town map (null elsewhere)
+  lu.townPlan = townPlan;
   defineLazy('edges', () => buildEdges(lu.lots));
   defineLazy('orchards', () => buildOrchards(lu.lots));
   defineLazy('poles', () => buildPoles(lu.lots));

@@ -850,8 +850,11 @@ export class AirBattle {
     // active. Flying keyboard-only (mouse idle) the instructor stands down
     // completely so it never fights a manoeuvre — moving the mouse blends
     // it back in instantly.
-    const kRoll = (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0);
-    const kPitch = (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0);
+    // touch hook (core/touch.js): the analog left stick owns roll and pitch
+    // like held keys (push = nose down, as W)
+    const ts = input.stick;
+    const kRoll = ts ? ts.x : (input.down('KeyD') ? 1 : 0) - (input.down('KeyA') ? 1 : 0);
+    const kPitch = ts ? ts.y : (input.down('KeyW') ? 1 : 0) - (input.down('KeyS') ? 1 : 0);
     const kYaw = (input.down('KeyQ') ? 1 : 0) - (input.down('KeyE') ? 1 : 0);
     const keysHeld = kRoll !== 0 || kPitch !== 0 || kYaw !== 0;
     const mouseRecent = this.followDelay > 0; // mouse moved in the last 0.9s

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { input } from './core/input.js';
+import { touch, detectTouch, touchDeviceClass } from './core/touch.js';
+import { setAssetTier } from './core/assets.js';
 import {
   initAudio, updateEngineSound, setVolumes, resetAudio,
 } from './core/audio.js';
@@ -10,6 +12,8 @@ import { warmEnvironment } from './world/scenery.js';
 import { HUD } from './ui/hud.js';
 import { Garage } from './ui/garage.js';
 import { Battle } from './game/battle.js';
+import { ConvoyBattle } from './game/convoy.js';
+import { getMapChoice } from './game/maps.js';
 import { AirBattle } from './game/airBattle.js';
 import { CombinedBattle } from './game/combinedBattle.js';
 import { progress, createSpawnBudget, specById } from './game/progress.js';
@@ -47,11 +51,18 @@ if (location.hash === '#maxall' || !maxallDone) {
 const app = document.getElementById('app');
 const overlay = document.getElementById('overlay');
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// mobile lane: the low-power profile. A touch device (pointer: coarse) gets a
+// render scale capped at 1.5 CSS-px ratio instead of 2, plain PCF shadows, and
+// a phone no MSAA and the 512 photo-texture tier. A desktop gets exactly the
+// renderer it always had.
+const TOUCH_DEVICE = detectTouch();
+const PHONE = TOUCH_DEVICE && touchDeviceClass() === 'phone';
+if (PHONE) setAssetTier(512);
+const renderer = new THREE.WebGLRenderer({ antialias: !PHONE });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, TOUCH_DEVICE ? 1.5 : 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = TOUCH_DEVICE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 // AgX (art bible C-27, realism backlog L-02): it keeps a sunlit paint's
 // saturation and does not crush a shaded one, where ACES pushed olive drab 26 %
 // more saturated and a quarter-lit hull to black. The contrast comes from the
@@ -81,6 +92,12 @@ xrayRenderer.setPixelRatio(1);
 input.init();
 
 const hud = new HUD();
+// mobile lane: on-screen controls (a no-op on a desktop)
+touch.init({
+  pause: (reason) => pauseBattle(reason),
+  toggleMap: () => hud.toggleBigMap?.(),
+  mapOpen: () => !!hud.bigMapVisible,
+});
 let battle = null;
 let paused = false;
 let currentMode = 'ground';
@@ -148,6 +165,12 @@ function hideOverlay() {
 }
 
 function requestLock() {
+  // mobile lane: a touch device has no pointer lock; the battle is engaged by
+  // the frame loop (input.touchEngaged) and this tap only asks for fullscreen
+  if (touch.active) {
+    touch.enterImmersive();
+    return;
+  }
   if (!document.pointerLockElement) {
     renderer.domElement.requestPointerLock()?.catch?.(() => {});
   }
@@ -314,6 +337,7 @@ const GFX_KEY = 'steelSkies.graphics';
 // and the GPU itself is asked as well: Intel integrated graphics is "medium"
 // however many cores sit next to it (backlog 1.1).
 function defaultGraphics() {
+  if (TOUCH_DEVICE) return 'low'; // mobile lane: phones and tablets start low
   try {
     return postFXQualityFor({ gpu: gpuNameOf(renderer) });
   } catch (e) {
@@ -712,7 +736,9 @@ function startBattle(battleMode, vehicleType, specId) {
       ? new AirBattle(renderer, specId, hud, onBattleEnd)
       : battleMode === 'combined'
         ? new CombinedBattle(renderer, vehicleType, specId, hud, onBattleEnd)
-        : new Battle(renderer, specId, hud, onBattleEnd);
+        : battleMode === 'convoy'
+          ? new ConvoyBattle(renderer, specId, hud, onBattleEnd, { map: getMapChoice() })
+          : new Battle(renderer, specId, hud, onBattleEnd, { map: getMapChoice() });
   battle.onPlayerDeath = onPlayerDeath;
   applySettings();
   let b = spawnBudget();
@@ -1117,6 +1143,8 @@ function settlementFor(result) {
       groundKills: result.groundKills || 0,
       hits: result.hits || 0,
       caps: result.caps || 0,
+      // CONVOY: lorries the player's side brought through (game/convoy.js)
+      convoyTrucks: result.convoyTrucks || 0,
       // a unitless damage score, not hit points: 100 is one whole vehicle taken
       // out of the battle, so every mode's number buys the same payout
       damage: num(result.damage ?? battle?.playerDamage, 0),
@@ -1365,6 +1393,14 @@ document.addEventListener('pointerlockchange', () => {
     paused = false;
     return;
   }
+  pauseBattle('lock');
+});
+
+// The pause screen. On a desktop it opens when pointer lock is lost (Esc), as
+// it always did; on a touch device (mobile lane) from the pause button, the
+// rotate gate and an app switch.
+function pauseBattle(reason) {
+  if (reason !== 'lock' && !touch.active) return;
   const inBattle =
     battle && !battle.finished && (battle.player.alive || battle.spectate) &&
     overlay.classList.contains('hidden');
@@ -1389,6 +1425,12 @@ document.addEventListener('pointerlockchange', () => {
       leaveBattle();
     });
   }
+}
+
+// mobile lane: switching apps on a phone pauses the battle (a desktop pauses
+// through the pointer lock the browser takes away)
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && touch.active) pauseBattle('hidden');
 });
 
 // click on canvas re-locks during battle (e.g. after spectating)
@@ -1620,6 +1662,12 @@ function frame(dt) {
     return;
   }
   const live = battle && !paused && !battle.finished && overlay.classList.contains('hidden');
+  // mobile lane: the touch layer shows only while a battle is live, and that
+  // is also what opens the firing gate without pointer lock
+  if (touch.active) {
+    touch.update(battle, !!live);
+    input.touchEngaged = !!live && !paused;
+  }
   watchFrameRate(live);
   if (live) {
     elapsed += dt;

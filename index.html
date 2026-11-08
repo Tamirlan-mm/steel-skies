@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>Steel Skies — Ground Assault</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -98,6 +100,14 @@
     </div>
     <div id="garage" class="hidden"></div>
     <div id="overlay" class="hidden"></div>
+    <!-- mobile lane: on-screen controls (built by core/touch.js on a touch
+         device only) and the "turn your device" card for portrait -->
+    <div id="touchUI" class="hidden"></div>
+    <div id="rotateGate" aria-live="polite">
+      <svg viewBox="0 0 64 64" width="72" height="72" aria-hidden="true"><rect x="20" y="8" width="24" height="42" fill="none" stroke="currentColor" stroke-width="3"/><rect x="8" y="36" width="42" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="4 3"/><path d="M50 14 a14 14 0 0 1 6 14" fill="none" stroke="currentColor" stroke-width="3"/><path d="M52 30 l4 -2 l2 4" fill="none" stroke="currentColor" stroke-width="3"/></svg>
+      <b>TURN YOUR DEVICE SIDEWAYS</b>
+      <span>Steel Skies is played in landscape.</span>
+    </div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

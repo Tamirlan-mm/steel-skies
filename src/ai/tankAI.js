@@ -625,10 +625,20 @@ export class TankAI {
     let threat = null;
     let threatScore = Infinity;
 
-    for (const other of this.battle.tanks) {
+    // battle.softTargets (optional): unarmoured things worth a round that are
+    // not tanks — the convoy's trucks (game/convoy.js). They duck-type a hull
+    // (position, yaw, speed, spec.hull / turret / armor, turretWorldPos) and
+    // are never a threat: they cannot shoot back.
+    const tanks = this.battle.tanks;
+    const soft = this.battle.softTargets;
+    const nT = tanks.length;
+    const nAll = nT + (soft ? soft.length : 0);
+    for (let oi = 0; oi < nAll; oi++) {
+      const other = oi < nT ? tanks[oi] : soft[oi - nT];
       if (!other.alive || other.team === t.team) continue;
       const d = t.position.distanceTo(other.position);
       if (d > MAX_SIGHT) continue;
+      if (other.engageRange && d > other.engageRange) continue;
       this.centreOf(other, tmpV);
       // the ground first (the dearer test, but the common blocker), then smoke
       // at the same opacity the player's HUD is held to, then the walls
@@ -641,10 +651,14 @@ export class TankAI {
       if (other === t.lastAttacker) score -= 90;
       // a target this gun cannot beat is a poor use of a reload
       if (!this.wouldPenetrate(other, d)) score += 200;
+      // the battle may rank a target up: a soft target that is the objective
+      // itself (a convoy lorry), or a hull that has just fired on one
+      if (other.targetPriority) score -= other.targetPriority;
       if (score < bestScore) {
         bestScore = score;
         best = other;
       }
+      if (other.isGroundUnit) continue;
 
       // threat: everything that can see us is a threat, and the one that can
       // do it soonest is the one to keep the glacis pointed at
@@ -1289,6 +1303,13 @@ export class TankAI {
     else if (point.x < -lim) point.x = -lim;
     if (point.z > lim) point.z = lim;
     else if (point.z < -lim) point.z = -lim;
+    // A battle with a street graph (the town map, game/townNav.js) hands back
+    // the next node along the streets when the goal is not in a straight line
+    // of clear road; without one, or with the goal in plain view, this is null.
+    if (!reverse && this.battle && typeof this.battle.navStep === 'function') {
+      const via = this.battle.navStep(this, point);
+      if (via) point = via;
+    }
     const dx = point.x - t.position.x;
     const dz = point.z - t.position.z;
     const dist = Math.hypot(dx, dz);

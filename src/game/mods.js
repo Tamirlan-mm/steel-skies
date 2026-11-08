@@ -196,9 +196,20 @@ export function tierGate(vehicleId, kind, tier) {
   return { unlocked: have >= need, have, need };
 }
 
+// An ordnance module on a type that never carried that store (the Yak-3 had
+// no bomb or rocket fit) is not for sale: it would unlock a loadout with
+// nothing on the racks.
+export function modAvailable(spec, mod) {
+  const id = typeof mod === 'string' ? mod : mod && mod.id;
+  if (id === 'bombs') return !!(spec && spec.bombs && spec.bombs.count > 0);
+  if (id === 'rockets') return !!(spec && spec.rockets && spec.rockets.count > 0);
+  return true;
+}
+
 // Everything the garage needs to draw one module button.
 export function modStatus(spec, kind, mod) {
   const owned = ownedMods(spec.id).includes(mod.id);
+  const available = modAvailable(spec, mod);
   const gate = tierGate(spec.id, kind, mod.tier);
   const cost = modCostFor(spec, mod);
   return {
@@ -206,8 +217,9 @@ export function modStatus(spec, kind, mod) {
     tierUnlocked: gate.unlocked,
     gate,
     cost,
+    available,
     affordable: progress.data.rp >= cost.rp && progress.data.silver >= cost.silver,
-    buyable: !owned && gate.unlocked &&
+    buyable: !owned && available && gate.unlocked &&
       progress.data.rp >= cost.rp && progress.data.silver >= cost.silver,
   };
 }
@@ -218,6 +230,7 @@ export function buyModule(spec, kind, modId) {
   const mod = modDef(kind, modId);
   if (!mod) return false;
   if (ownedMods(spec.id).includes(modId)) return false;
+  if (!modAvailable(spec, mod)) return false;
   if (!isTierUnlocked(spec.id, kind, mod.tier)) return false;
   return progress.buyMod(spec.id, modId, modCostFor(spec, mod));
 }

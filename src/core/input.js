@@ -157,7 +157,23 @@ export const input = {
   _dx: 0,
   _dy: 0,
   wheel: 0,
-  locked: false,
+  // `locked` is the firing gate the battles read. On a desktop it is exactly
+  // "the pointer is locked" (_plock). On a touch device there is no pointer
+  // lock; main.js sets touchEngaged while a battle is live with no overlay up
+  // (mobile lane), so the same gate opens without any battle-file change.
+  _plock: false,
+  touchEngaged: false,
+  get locked() {
+    return this._plock || this.touchEngaged;
+  },
+  set locked(v) {
+    this._plock = !!v;
+  },
+  // touch (core/touch.js): the analog left stick, { x, y } in -1..1 with
+  // y screen-up positive, or null when no thumb is on it. The battles' drive
+  // and roll/pitch hooks read it; it is never set on a desktop.
+  stick: null,
+  _lastTouch: -Infinity,
 
   // remap state
   bind: {}, // logical -> physical, only entries that differ from default
@@ -328,13 +344,16 @@ export const input = {
 
   release(phys) {
     const logical = this._held.get(phys) || this.resolve(phys);
-    for (const l of logical) this.keys.delete(l);
+    // a code a touch button still holds stays down until the finger lifts
+    // (_touchKeys is always empty on a desktop: exactly the old behaviour)
+    for (const l of logical) if (!this._touchKeys.has(l)) this.keys.delete(l);
     this._held.delete(phys);
   },
 
   releaseAll() {
     this.keys.clear();
     this._held.clear();
+    this._touchKeys.clear();
   },
 
   // fire and zoom let go however they are bound (pointer lock lost)
@@ -360,6 +379,7 @@ export const input = {
   onMouseDown(e) {
     const phys = `Mouse${e.button}`;
     if (!MOUSE_RE.test(phys)) return;
+    if (this.fromTouch()) return; // a tap's compatibility mouse event
     this.press(phys);
     // back / forward buttons navigate the page unless told not to
     if (this.locked && (e.button === 3 || e.button === 4)) e.preventDefault?.();
@@ -368,6 +388,7 @@ export const input = {
   onMouseUp(e) {
     const phys = `Mouse${e.button}`;
     if (!MOUSE_RE.test(phys)) return;
+    if (this.fromTouch()) return;
     this.release(phys);
     if (this.locked && (e.button === 3 || e.button === 4)) e.preventDefault?.();
   },
@@ -378,7 +399,7 @@ export const input = {
     window.addEventListener('keyup', (e) => this.onKeyUp(e));
     window.addEventListener('blur', () => this.releaseAll());
     window.addEventListener('mousemove', (e) => {
-      if (this.locked) {
+      if (this._plock) {
         this._dx += e.movementX;
         this._dy += e.movementY;
       }
@@ -395,6 +416,37 @@ export const input = {
       this.locked = document.pointerLockElement != null;
       if (!this.locked) this.releaseLogical('Mouse0', 'Mouse2');
     });
+  },
+
+  // ---------------------------------------------------------------- touch
+  // core/touch.js writes LOGICAL codes (a button is the action itself, so the
+  // remap layer is not involved). A code a key also holds stays held until
+  // both have let go.
+  _touchKeys: new Set(),
+  touchPress(code) {
+    if (!this.keys.has(code)) this.justPressed.add(code);
+    this.keys.add(code);
+    this._touchKeys.add(code);
+  },
+  touchRelease(code) {
+    if (!this._touchKeys.delete(code)) return;
+    let keyHeld = false;
+    for (const ls of this._held.values()) if (ls.includes(code)) keyHeld = true;
+    if (!keyHeld) this.keys.delete(code);
+  },
+  // drag deltas in mouse counts (they go through the same sensitivity scale)
+  addLook(dx, dy) {
+    if (Number.isFinite(dx)) this._dx += dx;
+    if (Number.isFinite(dy)) this._dy += dy;
+  },
+  noteTouch() {
+    this._lastTouch = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  },
+  // true for the compatibility mouse events a finger on the touch layer makes
+  fromTouch() {
+    if (this._lastTouch === -Infinity) return false;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    return now - this._lastTouch < 700;
   },
 
   down(code) {

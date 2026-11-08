@@ -2166,6 +2166,7 @@ export class Plane {
   // propeller is gone, and it will never fly again. When it stops it is
   // written off — a wreck on the ground, not a fireball.
   _beginBellySlide(surf, kind, sink) {
+    this._slideV0 = Math.hypot(this.vel.x, this.vel.z);
     if (this.partOk('engine')) this._propStrike();
     this.wrecked = true;
     this._onGround = true;
@@ -2303,6 +2304,13 @@ export class Plane {
     } else {
       v += ((drive - (v > 0 ? friction : 0)) / mass) * dt;
       if (v < 0) v = 0; // no reverse gear
+    }
+    // A wreck on its belly that is GAINING speed is going down a slope
+    // steeper than the slide can hold: a ravine wall, the face of a cliff.
+    // That ends in a heap at the bottom, not at 170 m/s along the ground.
+    if (this.wrecked && v > (this._slideV0 != null ? this._slideV0 : v) + 8) {
+      this.crash('Slid over a drop', groundSurfaceAt(p.x, p.z, SURF_B), Math.abs(this.vel.y));
+      return;
     }
 
     // ---- steering ----

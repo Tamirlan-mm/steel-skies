@@ -1,17 +1,24 @@
 import * as THREE from 'three';
 import { isSharedResource } from '../core/materials.js';
-import { buildTerrain, terrainHeight, setTerrainSeed, WORLD_SIZE } from '../world/terrain.js';
+import {
+  buildTerrain, terrainHeight, setTerrainSeed, terrainFeatures, WORLD_SIZE,
+} from '../world/terrain.js';
 import * as terrainNS from '../world/terrain.js';
 import {
   setupEnvironment, disposeScenery, damagePropsAt, crushProps,
-  propBlocksLine, clearKeepOuts, solidPushOut,
+  propBlocksLine, clearKeepOuts, solidPushOut, inShadowBox,
 } from '../world/scenery.js';
 import { randomPreset, MAP_PRESETS } from '../world/presets.js';
+import { townPlanFor, TOWN_SEEDS } from '../world/town.js';
+import { StreetNav } from './townNav.js';
+import { resolveMap, MAP_NAME } from './maps.js';
 import { Tank } from '../vehicles/tankEntity.js';
 // The penetration forecast is a wave-2 addition to tankEntity.js. A namespace
 // import survives its absence; a named one would fail to link.
 import * as tankNS from '../vehicles/tankEntity.js';
-import { TANK_SPECS, shellPenAt, surfaceProps } from '../vehicles/tanks.js';
+import {
+  TANK_SPECS, shellPenAt, surfaceProps, gateTankShadows, installShadowProxyGate,
+} from '../vehicles/tanks.js';
 import { ShellManager, intersectTanks, clipRayToScenery, barrelIntoWall } from '../combat/ballistics.js';
 import { BulletManager } from '../combat/bullets.js';
 import { Effects } from '../combat/effects.js';
@@ -151,6 +158,18 @@ const spotAt = new THREE.Vector3();
 const smokeEye = new THREE.Vector3();
 const smokeAt = new THREE.Vector3();
 const artyV = new THREE.Vector3();
+
+// perf (wave 5): a unit's HUD marker text, rebuilt only when its arrow or its
+// rounded range changes; a steady frame hands the HUD the same string.
+// Exported for combinedBattle.js.
+export function markLabel(unit, arrow, metres) {
+  if (unit._markArrow !== arrow || unit._markDist !== metres) {
+    unit._markArrow = arrow;
+    unit._markDist = metres;
+    unit._markLabel = `<span class="arrow">${arrow}</span>${metres}m`;
+  }
+  return unit._markLabel;
+}
 // Reused by the hull's scenery shove: scenery.js keeps none of the option
 // objects it is handed.
 const scenCrushOpts = { force: PROP_HULL_FORCE, dirX: 0, dirZ: 0 };
@@ -169,8 +188,16 @@ function surfaceName() {
 }
 
 export class Battle {
-  constructor(renderer, playerSpecId, hud, onEnd) {
+  // opts (all optional, wave 5): { map: 'country' | 'town' | 'random' } — the
+  // ground map (game/maps.js; absent = the open country, as always). Subclasses
+  // (game/convoy.js) pass their own mode through opts.mode.
+  constructor(renderer, playerSpecId, hud, onEnd, opts = {}) {
     this.renderer = renderer;
+    this.modeOpts = opts || {};
+    this.modeKey = this.modeOpts.mode || 'ground';
+    this.modeLabel = 'Ground Domination';
+    // perf2: tank shadow proxies are drawn by the shadow pass only (tanks.js)
+    installShadowProxyGate(renderer);
     this.hud = hud;
     this.onEnd = onEnd;
     this.finished = false;
@@ -181,8 +208,18 @@ export class Battle {
       60, window.innerWidth / window.innerHeight, 0.3, 2500,
     );
 
-    setTerrainSeed(rand(-3000, 3000), rand(-3000, 3000));
-    const preset = randomPreset();
+    // The map. The town is laid along the terrain road of one of its own
+    // seeds (world/town.js TOWN_SEEDS: road and village on gentle ground);
+    // the country map rolls a fresh seed, exactly as before.
+    this.mapKey = resolveMap(this.modeOpts.map || 'country');
+    this.mapName = MAP_NAME[this.mapKey] || '';
+    if (this.mapKey === 'town') {
+      const sd = TOWN_SEEDS[Math.floor(rand(0, TOWN_SEEDS.length)) % TOWN_SEEDS.length];
+      setTerrainSeed(sd[0], sd[1]);
+    } else {
+      setTerrainSeed(rand(-3000, 3000), rand(-3000, 3000));
+    }
+    const preset = this.mapKey === 'town' ? randomPreset({ map: 'town' }) : randomPreset();
     this.preset = preset;
     // the drivetrain wants the preset's id, not its display name, and the dust
     // wants its ground tint — both are read straight off the table
@@ -207,6 +244,11 @@ export class Battle {
     clearKeepOuts();
     this.scenery = setupEnvironment(this.scene, { preset, effects: this.effects });
     this.sun = this.scenery.sun;
+    // town map: the street plan the land use built the houses from (the same
+    // memoised object), its capture points and the AI's street graph
+    this.town = this.mapKey === 'town' ? townPlanFor(terrainFeatures(), { terrainHeight }) : null;
+    this.nav = this.town && this.town.nodes.length ? new StreetNav(this.town) : null;
+    if (this.town) this.modeLabel = 'Town Domination';
     // Live array: fellProp splices an entry out the moment the wall it belongs
     // to comes down, so an empty list means there is genuinely nothing standing
     // that could block a sight line and the grid query can be skipped entirely.
@@ -234,6 +276,9 @@ export class Battle {
     this.tanks = [];
     this.ais = [];
     this.tickets = [TICKETS_MAX, TICKETS_MAX];
+    // a mode built on this class sets itself up here, before the zones and the
+    // spawns (game/convoy.js: the route and the trucks)
+    this.prepareMode();
     this.buildZones();
     this.respawnQueue = [];  // { team, specId, timer }
     this.time = 0;
@@ -293,7 +338,7 @@ export class Battle {
 
     // BR-matched rosters: the enemy team is drawn against what the player
     // actually brought instead of the same four tanks every battle
-    const plan = planBattle({ mode: 'ground', kind: 'ground', playerSpecId });
+    const plan = planBattle({ mode: this.modeKey, kind: 'ground', playerSpecId });
     this.plan = plan;
     this.spawnBudget = plan.spawnBudget;
 
@@ -330,8 +375,22 @@ export class Battle {
     hud.setCrosshairVisible(true);
     hud.setAirPanel?.(null);
     hud.setBlackout?.(0);
-    hud.setMatchInfo?.({ mode: 'Ground Domination', timeLeft: MATCH_TIME });
+    hud.setMatchInfo?.({ mode: this.modeLabel, timeLeft: this.matchTime });
     this.refreshHelp();
+    this.afterSpawns();
+  }
+
+  // ---- mode hooks (game/convoy.js overrides them) ----
+  prepareMode() {}
+  afterSpawns() {}
+  get matchTime() {
+    return MATCH_TIME;
+  }
+
+  // tankAI.js driveToward asks this for the next street node on the way to
+  // `goal` (null: drive straight at it). Only the town map has a street graph.
+  navStep(ai, goal) {
+    return this.nav ? this.nav.step(ai, goal, this.time) : null;
   }
 
   // Whether the vehicle in the player's hands can call the battery at all. The
@@ -357,7 +416,9 @@ export class Battle {
 
   // ---------------- capture zones ----------------
   buildZones() {
-    this.zones = ZONE_LAYOUT.map((def) => {
+    // the town's points sit in its streets and on its square (world/town.js)
+    const layout = this.town && this.town.zones && this.town.zones.length ? this.town.zones : ZONE_LAYOUT;
+    this.zones = layout.map((def) => {
       const z = {
         key: def.key,
         x: def.x,
@@ -660,6 +721,7 @@ export class Battle {
     for (const tank of this.tanks) {
       const wasAlive = tank.alive;
       tank.update(dt, this.surfaceFor(tank, dt));
+      gateTankShadows(tank, dt, inShadowBox);
       if (wasAlive && !tank.alive) {
         removeEngine('t' + tank.id);
         // burned out / bled out without a shooter credit
@@ -684,8 +746,10 @@ export class Battle {
     // (rounds meet the walls, rocks and trees inside ShellManager's own substep
     // loop now, before the tanks — combat/ballistics.js "Scenery in the line
     // of fire" — so there is no frame-boundary scenery sweep here any more)
+    // a mode with soft targets (game/convoy.js) hands its own list: tanks and
+    // lorries; onBulletTank sorts them out
     this.bullets.update(
-      dt, [], null, this.effects, this.tanks, this.bulletHitCb, this.bulletOpts,
+      dt, [], null, this.effects, this.bulletTargets || this.tanks, this.bulletHitCb, this.bulletOpts,
     );
     this.resolveTankCollisions();
     this.cleanupWrecks(dt);
@@ -729,14 +793,15 @@ export class Battle {
           + Math.abs(tank.throttleInput) * 0.35);
       const shifted = tank.audGear !== tank.gear;
       tank.audGear = tank.gear;
-      updateEngine('t' + tank.id, {
-        pos: tank.position,
-        rpm,
-        throttle: Math.abs(tank.throttleInput),
-        type: 'tank',
-        moving: Math.abs(tank.speed) > 0.4,
-        shift: shifted && tank.shiftTimer > 0,
-      });
+      // perf (wave 5): one request object and id per tank, refilled each
+      // frame (updateEngine copies what it reads, it keeps neither)
+      const o = tank._engineReq || (tank._engineReq = { pos: null, rpm: 0, throttle: 0, type: 'tank', moving: false, shift: false });
+      o.pos = tank.position;
+      o.rpm = rpm;
+      o.throttle = Math.abs(tank.throttleInput);
+      o.moving = Math.abs(tank.speed) > 0.4;
+      o.shift = shifted && tank.shiftTimer > 0;
+      updateEngine(tank._engineId || (tank._engineId = 't' + tank.id), o);
     }
     const sn = Math.abs(tank.speed) / (spec.maxSpeed || 12);
     // any motion at all: the dust gates itself on speed, the track prints
@@ -860,6 +925,11 @@ export class Battle {
     // drive (increasing yaw turns left on screen, so A is +1)
     p.throttleInput = (input.down('KeyW') ? 1 : 0) + (input.down('KeyS') ? -1 : 0);
     p.steerInput = (input.down('KeyA') ? 1 : 0) + (input.down('KeyD') ? -1 : 0);
+    // touch hook (core/touch.js): the analog left stick; right = D = -1
+    if (input.stick) {
+      p.throttleInput = input.stick.y;
+      p.steerInput = -input.stick.x;
+    }
 
     // aim ray from camera through screen center
     const dir = tmpV.set(
@@ -1324,10 +1394,21 @@ export class Battle {
   // simple XZ push-apart so tanks can't drive through each other;
   // dead hulls act as immovable obstacles
   resolveTankCollisions() {
-    const list = this.wrecks ? [...this.tanks, ...this.wrecks] : this.tanks;
-    for (let i = 0; i < list.length; i++) {
+    // perf (wave 5): one reused list, not a fresh spread every frame
+    // (written by index with its own count: `length = 0` + push regrows the
+    // backing store every frame)
+    let list = this.tanks;
+    let n = list.length;
+    if (this.wrecks) {
+      list = this._collideList || (this._collideList = []);
+      n = 0;
+      for (let i = 0; i < this.tanks.length; i++) list[n++] = this.tanks[i];
+      for (let i = 0; i < this.wrecks.length; i++) list[n++] = this.wrecks[i];
+      for (let i = n; i < list.length && list[i] !== null; i++) list[i] = null;
+    }
+    for (let i = 0; i < n; i++) {
       const a = list[i];
-      for (let j = i + 1; j < list.length; j++) {
+      for (let j = i + 1; j < n; j++) {
         const b = list[j];
         const dx = b.position.x - a.position.x;
         const dz = b.position.z - a.position.z;
@@ -2293,7 +2374,7 @@ export class Battle {
     let result = null;
     if (this.tickets[1] <= 0) result = 'victory';
     else if (this.tickets[0] <= 0) result = 'defeat';
-    else if (this.time > MATCH_TIME) {
+    else if (this.time > this.matchTime) {
       result = this.tickets[0] >= this.tickets[1] ? 'victory' : 'defeat';
     }
     if (!result) return;
@@ -2312,7 +2393,8 @@ export class Battle {
     return {
       victory: false,
       quit: false,
-      mode: 'ground',
+      mode: this.modeKey,
+      map: this.mapKey,
       kills: this.playerKills,
       assists: this.playerAssists,
       groundKills: this.playerGroundKills,
@@ -2433,8 +2515,8 @@ export class Battle {
           { x: 330, z: 0, team: 1, r: 70 },
         ],
         title: this.plan && this.plan.bracket
-          ? `Ground Domination · BR ${this.plan.br} · bracket ${this.plan.bracket.label}`
-          : 'Ground Domination',
+          ? `${this.modeLabel} · BR ${this.plan.br} · bracket ${this.plan.bracket.label}`
+          : this.modeLabel,
       };
     }
     for (let i = 0; i < this.zones.length; i++) {
@@ -2469,14 +2551,14 @@ export class Battle {
 
     this.refreshObjectiveText();
     hud.updateTickets(
-      this.tickets[0], this.tickets[1], TICKETS_MAX,
+      this.tickets[0], this.tickets[1], this.ticketsMax || TICKETS_MAX,
       this.capOwner, this.capProgress, this.zoneLabel,
     );
     hud.drawMinimap(this.mapUnits(), p, this.capOwner, true, WORLD_SIZE, this.mapOptions());
     hud.setSpeed(p.speed);
     if (hud.setMatchInfo) {
-      const mi = this.matchInfo || (this.matchInfo = { timeLeft: 0, mode: 'Ground Domination', objective: '' });
-      mi.timeLeft = Math.max(0, MATCH_TIME - this.time);
+      const mi = this.matchInfo || (this.matchInfo = { timeLeft: 0, mode: this.modeLabel, objective: '' });
+      mi.timeLeft = Math.max(0, this.matchTime - this.time);
       mi.objective = this.objText;
       hud.setMatchInfo(mi);
     }
@@ -2778,7 +2860,9 @@ export class Battle {
       : this.camera.position;
 
     for (const tank of this.tanks) {
-      const id = `t${tank.id}`;
+      // perf (wave 5): the id and the label text are cached on the tank, so
+      // a steady frame builds no strings (markLabel)
+      const id = tank._markId || (tank._markId = `t${tank.id}`);
       if (!tank.alive || tank === this.player) {
         hud.setMarker(id, '', 0, 0, '', false);
         continue;
@@ -2819,7 +2903,7 @@ export class Battle {
             id, cls,
             (proj.x * 0.5 + 0.5) * w,
             (-proj.y * 0.5 + 0.5) * h,
-            `<span class="arrow">${arrow}</span>${Math.round(dist)}m`,
+            markLabel(tank, arrow, Math.round(dist)),
             true,
           );
           continue;
@@ -2834,10 +2918,15 @@ export class Battle {
       const proj = cp.project(this.camera);
       const vis = proj.z < 1 && Math.abs(proj.x) < 1 && Math.abs(proj.y) < 1;
       const mark = z.owner === 0 ? '◈' : z.owner === 1 ? '◆' : '◇';
+      if (z._markText === undefined || z._markOwner !== z.owner) {
+        z._markId = `zone${z.key}`;
+        z._markOwner = z.owner;
+        z._markText = `${mark} ${z.key}`;
+      }
       hud.setMarker(
-        `zone${z.key}`, 'cap',
+        z._markId, 'cap',
         (proj.x * 0.5 + 0.5) * w, (-proj.y * 0.5 + 0.5) * h,
-        `${mark} ${z.key}`, vis,
+        z._markText, vis,
       );
     }
     if (this.artyStrike) {

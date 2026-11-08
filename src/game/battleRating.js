@@ -72,7 +72,13 @@ function tankScore(spec) {
   const rpm = clamp(60 / Math.max(0.5, spec.reload || 6), 3, 26);
   // penetration is worth slightly more than linear: the step from 120 to 165mm
   // is the step from "bounce off the front" to "do not care about the front"
-  const firepower = Math.pow(pen / 100, 1.22) * (0.68 + 0.32 * clamp(rpm / 11, 0.35, 1.7));
+  // Past 100mm the calibre itself starts to count: a 122mm round overmatches
+  // every roof and side plate it meets and its HE kills outright, which the
+  // pen figure alone does not price (the IS-2 rated under a T-34-85-class
+  // 3.7 without it). Every gun at or under 100mm is untouched.
+  const cal = spec.shells && spec.shells.AP ? spec.shells.AP.caliber || 0 : 0;
+  const bigGun = 1 + Math.max(0, cal - 100) / 85;
+  const firepower = Math.pow(pen / 100, 1.22) * (0.68 + 0.32 * clamp(rpm / 11, 0.35, 1.7)) * bigGun;
 
   const ar = spec.armor || { hull: {}, turret: {} };
   const hull = ar.hull || {};

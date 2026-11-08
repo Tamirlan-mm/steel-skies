@@ -2259,15 +2259,97 @@ function driveAmbience(now) {
   }
 }
 
-// ---------------- rain (stub for W-01) ----------------
+// ---------------- rain (W-01) ----------------
 //
-// The contract the rain lane calls from scenery.addWeather(): 0 = dry, 1 =
-// a downpour. Recorded only, for now — the bed itself arrives with W-01's
-// sample; until then a call is harmless and silent.
+// The contract world/scenery.js calls (addRain, then every frame with the
+// level faded above the cloud deck): 0 = dry, 1 = steady rain. The bed is
+// SYNTHESISED, no sample: 4 s of looped noise built once per session — a
+// soft broadband hiss (pink-ish, the far rain) plus a few thousand short
+// droplet ticks (the near patter on ground, plates and leaves) — through a
+// band-pass at 2.4 kHz. It rides the effects bus like the other beds, is
+// only driven from updateAudio() (so the hangar stays quiet) and fades out
+// in resetAudio().
 let rainLevel = 0;
+let rainNode = null;
+let rainBuf = null;
+const RAIN_GAIN = 0.22;
 export function rainBed(level) {
   rainLevel = clamp(Number(level) || 0, 0, 1);
   return rainLevel;
+}
+export function rainBedLevel() {
+  return rainLevel;
+}
+
+function makeRainBuffer() {
+  const sr = ctx.sampleRate;
+  const len = Math.floor(sr * 4);
+  const buf = ctx.createBuffer(2, len, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    // Paul Kellet's economy pink filter over white noise
+    let b0 = 0; let b1 = 0; let b2 = 0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      b0 = 0.99765 * b0 + w * 0.099046;
+      b1 = 0.963 * b1 + w * 0.2965164;
+      b2 = 0.57 * b2 + w * 1.0526913;
+      d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.06;
+    }
+    // droplets: decaying 1.5-5 kHz blips, ~700 a second per channel
+    const drops = Math.floor(4 * 700);
+    for (let k = 0; k < drops; k++) {
+      const at = Math.floor(Math.random() * len);
+      const f = 1500 + Math.random() * 3500;
+      const a = 0.04 + Math.random() * Math.random() * 0.25;
+      const dur = Math.floor(sr * (0.004 + Math.random() * 0.012));
+      const tau = dur / 4;
+      for (let j = 0; j < dur; j++) {
+        const idx = (at + j) % len;   // wrapped: the loop has no seam
+        d[idx] += a * Math.exp(-j / tau) * Math.sin((2 * Math.PI * f * j) / sr);
+      }
+    }
+    // the loop point: a short crossfade of the ends
+    const xf = Math.floor(sr * 0.05);
+    for (let i = 0; i < xf; i++) {
+      const t = i / xf;
+      d[i] = d[i] * t + d[len - xf + i] * (1 - t);
+    }
+  }
+  return buf;
+}
+
+function driveRain(now) {
+  if (rainLevel <= 0 && !rainNode) return;
+  if (!rainNode) {
+    try {
+      if (!rainBuf) rainBuf = makeRainBuffer();
+      const src = ctx.createBufferSource();
+      src.buffer = rainBuf;
+      src.loop = true;
+      src.loopStart = 0.05;
+      src.loopEnd = rainBuf.duration - 0.0001;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2400;
+      bp.Q.value = 0.35;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(sfxBus);
+      src.start(now, Math.random() * 3.5);
+      rainNode = { src, g };
+    } catch (e) {
+      rainNode = null;
+      rainLevel = 0;
+      return;
+    }
+  }
+  // a pilot hears the rain on the canopy under the slipstream: less of it
+  const plane = ambProfile === 'plane';
+  const target = rainLevel * RAIN_GAIN * (plane ? 0.6 : 1);
+  rainNode.g.gain.setTargetAtTime(target, now, 0.8);
 }
 
 // ---------------- housekeeping ----------------
@@ -2280,6 +2362,7 @@ export function updateAudio() {
   const now = ctx.currentTime;
   if (now - lastRealloc > 0.2) reallocEngines(now);
   driveAmbience(now);
+  driveRain(now);
 }
 
 // Drop every scheduled sound and silence every engine. Worth calling when a
@@ -2315,5 +2398,6 @@ export function resetAudio() {
   // the beds only come back when a battle starts calling updateAudio() again
   if (ambWind) ambWind.g.gain.setTargetAtTime(0, now, 0.15);
   if (ambBattle) ambBattle.g.gain.setTargetAtTime(0, now, 0.15);
+  if (rainNode) rainNode.g.gain.setTargetAtTime(0, now, 0.15);
   ambSpeed = 0;
 }

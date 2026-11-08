@@ -682,6 +682,18 @@ function fieldTap(data, size, u, v) {
   return (a + (b - a) * fy) / 255;
 }
 
+// S-01's deck density at world (x, z) for a field drift (dx, dz) in uv units
+// (the deck's uWind . uTime): the JS twin of core/atmosphere.js ssDeckDensity,
+// which the deck and the S-03 cloud shadows both read.
+export function deckDensityAt(x, z, dx = 0, dz = 0) {
+  const fd = cloudFieldData();
+  const fs = CLOUD_FIELD_SIZE;
+  const u = x / CLOUD_FIELD_PERIOD + dx;
+  const v = z / CLOUD_FIELD_PERIOD + dz;
+  return 0.65 * fieldTap(fd, fs, u, v)
+    + 0.35 * fieldTap(fd, fs, u * 2.17 + 0.31 + dx * 0.6, v * 2.17 + 0.57 + dz * 0.6);
+}
+
 function noiseTap(noise, u, v, w, out) {
   const N = noise.size;
   const d = noise.data;

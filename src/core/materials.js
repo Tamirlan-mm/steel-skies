@@ -1016,7 +1016,8 @@ export function vehicleEnvironmentFromPreset(p) {
   const snowGround = ground === 'snow';
   const dust = dustTable[ground] ?? dustTable.dirt ?? 0x8a7050;
   const precip = p.precip || 'none';
-  let wet = precip === 'rain' ? 0.85 : 0;
+  // W-02: the preset's own wetness (presets.js wetnessOf: rain 1)
+  let wet = p.wet && p.wet.wet > 0 ? Math.min(1, p.wet.wet) : (precip === 'rain' ? 0.85 : 0);
   if (p.weatherKey === 'overcast') wet = Math.max(wet, 0.12);
   return {
     dust,
@@ -1390,7 +1391,8 @@ function applyTriplanar(material, scale, opts = {}) {
         // Z3: rain streaks down vertical plates above Z1 (R of the data map)
         float st = rghS.r * uZMask.z * (1.0 - smoothstep(0.22, 0.36, abs(zN.y)))
           * smoothstep(z1Top, z1Top + 0.2, zH);
-        diffuseColor.rgb *= 1.0 - st * vec3(0.22, 0.27, 0.32);
+        // (W-02: in rain the runs carry water and grime: stronger)
+        diffuseColor.rgb *= 1.0 - st * (1.0 + 0.8 * uZWet) * vec3(0.22, 0.27, 0.32);
         // Z4: chips within 3 cm of convex creases; the CC0 wear mask once it
         // has loaded, the painter's rank-uniform field until then
         float eT = clamp(eD / 0.03, 0.0, 1.0);
@@ -1420,13 +1422,16 @@ function applyTriplanar(material, scale, opts = {}) {
         float cap = 0.35 / max(abs(lumDust / lumNow - 1.0), 0.35);
         zZ2W = smoothstep(0.70, 0.92, zN.y) * (0.12 + 0.30 * max(wMix.g, zn * 0.8))
           * uZMask.y * cap * (1.0 - zZ1W);
+        zZ2W *= 1.0 - 0.75 * uZWet;   // W-02: rain washes the deck film off
         diffuseColor.rgb = mix(diffuseColor.rgb, zDust, zZ2W);
         // snow lying on the decks
         zSnowW = uZSnow * smoothstep(0.55, 0.85, zN.y) * smoothstep(0.42, 0.62, zn) * uZMask.y;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.855, 0.900, 0.930), zSnowW);
         // wet: darker and glossier, on the mud and on anything facing the sky
+        // W-02 (Lagarde): only the porous mud darkens; paint is not porous, so
+        // the faces up only lose roughness (to 0.30-0.45, below)
         zWetW = uZWet * max(zZ1W, smoothstep(0.5, 0.9, zN.y)) * (1.0 - zSnowW);
-        diffuseColor.rgb *= 1.0 - 0.30 * zWetW;
+        diffuseColor.rgb *= 1.0 - 0.30 * uZWet * zZ1W * (1.0 - zSnowW);
       }` : ''}`,
     );
 
@@ -1443,7 +1448,7 @@ function applyTriplanar(material, scale, opts = {}) {
       roughnessFactor = mix(roughnessFactor, zZ1Rough, zZ1W);
       roughnessFactor = min(1.0, roughnessFactor + 0.40 * zZ2W);
       roughnessFactor = mix(roughnessFactor, 0.90, zSnowW);
-      roughnessFactor *= 1.0 - 0.5 * zWetW;` : ''}`,
+      roughnessFactor = mix(roughnessFactor, clamp(roughnessFactor * 0.5, 0.30, 0.45), zWetW);` : ''}`,
     );
 
     // Metalness: triplanar too, or the polished track faces would be read

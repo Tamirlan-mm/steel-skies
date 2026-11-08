@@ -859,6 +859,16 @@ ${LANDUSE_FAST || LANDUSE_GLSL}
   uniform vec3 uRockCol;       // linear albedo of the rock layer
   uniform vec3 uTrackCol;      // linear albedo of the packed road / village earth
   uniform vec2 uSnow;          // x = fresh snow cover 0..1, y = 1 when the biome's ground IS snow
+  uniform vec4 uWet;           // W-02 (R3-A): x wetness 0..1, y puddle spread 0..1, z / w wet albedo factor of soil / track
+  #define SS_CLOUD_TERRAIN     // S-03: core/atmosphere.js shades the ground at the medium tier too
+  // W-02 puddle bands on macro.g (linear / mean; measured with the rain lane's
+  // probe_macro.mjs): ruts flood where macro.g < ~0.94, Q(0.45), so 45 % of a
+  // rut stands in water; hollows below ~0.76, Q(0.05): 42 % of the lowest
+  // eighth of the ground (macro.g < Q(0.12) = 0.80), where it is flat and bare
+  #define PUD_RUT_LO 0.85
+  #define PUD_RUT_HI 1.03
+  #define PUD_HOL_LO 0.73
+  #define PUD_HOL_HI 0.79
   uniform sampler2DArray uTerrC;   // photo albedo detail (sRGB; linear mean 0.5 per channel)
   uniform sampler2DArray uTerrN;   // photo (normal X, normal Y, roughness, height)
   uniform vec4 uPSlot[9];      // per photo slot: layer, 1 / tile metres, roughness bias, normal strength
@@ -1186,7 +1196,8 @@ const FRAG_MAP = `{
     float rutA = exp(-pow2((ar - 0.525) / 0.21));
     float rutB = exp(-pow2((ar - 2.225) / 0.21));
     float rut = max(rutA, rutB) * carriage * roadAA;
-    float puddle = rut * (1.0 - smoothstep(0.74, 0.93, macro.g)) * (1.0 - snowK);
+    // W-02: rain floods the ruts from the lowest stretches up (uWet.y)
+    float puddle = rut * (1.0 - smoothstep(mix(0.74, PUD_RUT_LO, uWet.y), mix(0.93, PUD_RUT_HI, uWet.y), macro.g)) * (1.0 - snowK);
     float roadT = max(carriage, verge * 0.5);
     w.xyz *= 1.0 - roadT;
     w.w = mix(w.w, 1.0, roadT);
@@ -1195,6 +1206,13 @@ const FRAG_MAP = `{
     float wSoil = w.y;
     float wTrack = w.w;           // track colour; soil texture (procedural) or its own scan (photo)
     float wRock = w.z;
+    // W-02: and stands in the low hollows of bare and trodden ground
+    float hollowP = 0.0;
+    if (uWet.y > 0.0) {
+      hollowP = uWet.y * (1.0 - smoothstep(PUD_HOL_LO, PUD_HOL_HI, macro.g)) * smoothstep(0.975, 0.992, gn.y)
+        * clamp(wSoil + wTrack + 0.25 * wCover, 0.0, 1.0) * (1.0 - snowK);
+      puddle = max(puddle, hollowP);
+    }
 
     // ---- detail, per slot ------------------------------------------------------
     // d = albedo factor (mean 1), r = roughness, n = tangent-space normal
@@ -1545,6 +1563,15 @@ const FRAG_MAP = `{
     // bright texels, so the ceiling is a soft knee on luminance (from Y 0.72,
     // hue kept), not a per-channel clamp that would grey the snow and flatten
     // its bright half. The procedural layers keep their old 0..1 clamp.
+    // W-02 wet ground (Lagarde): porous soil and trodden earth darken toward
+    // Y 0.05-0.09 (uWet.zw, solved per layer from its own mean in JS, so the
+    // detail keeps its contrast), wet grass a little, rock less; standing
+    // water darkens what it covers
+    if (uWet.x > 0.0) {
+      float wetK = wCover * 0.86 + wSoil * uWet.z + wTrack * uWet.w + wRock * 0.8;
+      alb *= mix(1.0, wetK / max(wCover + wSoil + wTrack + wRock, 1e-3), uWet.x);
+      alb *= 1.0 - 0.45 * hollowP;
+    }
     vec3 albP = alb;
     if (photo > 0.0) {
       float yA = dot(albP, vec3(0.2126, 0.7152, 0.0722));
@@ -1561,7 +1588,10 @@ const FRAG_MAP = `{
                * mix(1.0, 0.86, wTrack)
                * mix(1.0, macro.g, 0.25);
     // standing water in the ruts where the macro map says the ground lies low
-    gTerrRough = mix(gTerrRough, 0.15, puddle);
+    gTerrRough = mix(gTerrRough, mix(0.15, 0.08, uWet.x), puddle);
+    // W-02: water in the pores and films: roads and ruts lose most of their
+    // roughness, bare soil much, grass a little
+    gTerrRough *= 1.0 - uWet.x * (0.55 * wTrack + 0.45 * wSoil + 0.2 * wCover + 0.3 * wRock) * (1.0 - puddle);
 
     // Weighted tangent-space normal blend. The z terms carry the layer weights
     // too, so the three (or four) contributions sum back to a unit-ish normal.
@@ -2166,6 +2196,21 @@ function photoFader(state, u) {
   };
 }
 
+// W-02 (R3-A hook): (wetness, puddle spread, wet albedo factor of the soil
+// and of the track) from palette.wet (presets.js wetnessOf). The factors
+// take each layer's own mean to Y 0.07 / 0.075, never lighter, at most to
+// 0.35 of the dry value and always at least 15 % darker.
+export const WET_SOIL_Y = 0.07;
+export const WET_TRACK_Y = 0.075;
+export function terrainWetUniform(palette, S = null) {
+  const w = palette && palette.wet ? palette.wet : null;
+  const wet = w && Number.isFinite(w.wet) ? Math.min(1, Math.max(0, w.wet)) : 0;
+  const pud = w && Number.isFinite(w.puddle) ? Math.min(1, Math.max(0, w.puddle)) : 0;
+  const Y = (c) => (c ? 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b : 0.15);
+  const f = (c, target) => Math.min(0.85, Math.max(0.35, target / Math.max(1e-3, Y(c))));
+  return new THREE.Vector4(wet, pud, f(S && S.soil, WET_SOIL_Y), f(S && S.track, WET_TRACK_Y));
+}
+
 function groundMaterial(palette, size, quality, S) {
   const cover = layerSet(coverKind(palette), GROUND_TEX[quality]);
   const soil = layerSet('soil', GROUND_TEX[quality]);
@@ -2216,6 +2261,7 @@ function groundMaterial(palette, size, quality, S) {
     uRockCol: { value: S.rock.clone() },
     uTrackCol: { value: S.track.clone() },
     uSnow: { value: new THREE.Vector2(S.snowCover, S.snowGround) },
+    uWet: { value: terrainWetUniform(palette, S) },
   };
   // All six land-use uniforms, as the very {value} objects landuse.js made:
   // slots 0-4 of uLuWood are a header luParcel reads (crop thresholds, cap,

@@ -11,7 +11,7 @@ import {
   mattMaterial,
   markingsMaterial, markSharedGeometry, markShared,
   inPaintBand, hexToLinear,
-  PAINT_US_OD, PAINT_SU_4BO, PAINT_DE_DUNKELGELB, PAINT_DE_PRIMER,
+  PAINT_US_OD, PAINT_SU_4BO, PAINT_DE_DUNKELGELB, PAINT_DE_PRIMER, PAINT_UK_SCC15,
   SCHEME_DE_THREE_TONE,
 } from '../core/materials.js';
 import { insigniaAtlas, INSIGNIA_PAINT, INSIGNIA_ROUGHNESS } from '../core/insignia.js';
@@ -531,6 +531,320 @@ export const TANK_SPECS = {
       { glyph: 'us_star_white', frame: 'turret', side: 'both', y: 0.42, z: -0.25, size: 0.50 },
       { glyph: 'us_star_white', frame: 'hull', side: 'both', y: 1.31, z: 0.55, size: 0.42 },
       { glyph: 'solid', frame: 'hull', side: 'top', x: 0, z: -2.62, size: [1.15, 0.60], color: MARK_CERISE },
+    ],
+  },
+
+  // ---- wave 5, vehicles lane part 2 -----------------------------------------
+  // Four more machines. Dimensions are the published overall figures (sources
+  // named per spec); everything the published tables do not give — turret
+  // ring station, trunnion height, wheel centres — is read off three-views
+  // and marked *verify*. Penetration follows the house scale the six above
+  // already use: about 1.2-1.3x the period 30-degree / 100-500 m acceptance
+  // figure, i.e. a 0-degree short-range number a little under the modern
+  // simulator tables, and APHE about a tenth under the solid shot.
+  panther: {
+    id: 'panther', name: 'Panther Ausf. G', nation: 'Germany',
+    klass: 'Medium Tank', tier: 4,
+    price: { silver: 12500, rp: 6000 },
+    // HL 230 P30, 700 PS governed to 2,500 rpm: 46 km/h on the road, which
+    // the house scale (Tiger 45 -> 11, M26 48 -> 12) reads as 12
+    maxSpeed: 12, accel: 5.4, turnRate: 1.1,
+    traverse: 1.3, reload: 7.0, crew: 5,
+    mass: 44.8, maxReverse: 4.0,
+    // AK 7-200 seven-speed box behind a regenerative steering unit: it turns
+    // on the spot in neutral, as the Tiger does
+    neutralSteer: true, climbMax: 0.55, dispersion: 0.0008,
+    gearbox: {
+      forward: [0.09, 0.17, 0.27, 0.4, 0.56, 0.76, 1],
+      reverse: [1], shift: 0.35,
+    },
+    consumables: { repair: 3, fpe: 2, firstAid: 2, smoke: 3 },
+    // 6.87 (hull) / 8.66 (gun forward) x 3.27 (3.42 over the Schuerzen) x
+    // 2.99m (Jentz/Doyle; Wikipedia infobox). Hull ROOF at 1.92m, 0.56m
+    // ground clearance. The read is ONE long wedge: 80mm at 55 degrees from
+    // a sharp nose beam all the way up to a deck that starts only 1.4m back,
+    // and the upper sides lean in at 30 degrees, so the hull is a sloped box
+    // where a Tiger is a slab.
+    hull: { w: 3.27, h: 0.92, len: 6.87, trackH: 1.0, clear: 0.56, sideDeg: 30 },
+    // the turret's plan runs 1.05m ahead of the ring and 1.45m behind it
+    // (turretShell 'panther'); 2.30 is the base width, the roof is ~1.55
+    turret: { w: 2.30, h: 0.82, len: 2.55, offZ: 0.25 },
+    // KwK 42 L/70 (5.25m bore): the trunnion sits at the front plate and the
+    // muzzle 1.79m ahead of the nose, which is the 8.66m overall length
+    gunLen: 3.98,
+    gunMount: { x: 0, y: 0.36, z: 1.0 },
+    armor: {
+      // glacis 80/55, lower nose 60/55; sponsons 50/30 (G), lower hull side
+      // 40 vertical behind the wheels; rear 40/30; deck 16
+      hull: { front: 80, side: 50, rear: 40, top: 16 },
+      // front plate 110/11, sides and rear 45/25, roof 16
+      turret: { front: 110, side: 45, rear: 45, top: 16 },
+      hullSlope: { front: 55, side: 30, rear: 30 },
+      turretSlope: { front: 11, side: 25, rear: 25 },
+      // the 100mm cast Topfblende with the chin (Sept. 1944): a rounded face,
+      // so it is worth its thickness and not more
+      mantlet: 100,
+    },
+    shells: {
+      // PzGr 39/42 (APCBC-HE), 925 m/s: 138mm at 100m / 30 deg (German
+      // acceptance) -> 178 on the house scale (Tiger: 120 -> 155)
+      AP: { kind: 'APHE', caliber: 75, pen: 178, speed: 925, count: 45 },
+      HE: { kind: 'HE', caliber: 75, pen: 22, speed: 700, splash: 5, count: 30 },
+      // PzGr 40/42 (APCR), 1,120 m/s: 194mm at 100m / 30 deg -> 240
+      APCR: { kind: 'APCR', caliber: 75, pen: 240, speed: 1120, count: 7 },
+    },
+    // Ausf. G: 82 rounds, almost all of them in the sponsons
+    ammoCap: 82,
+    mg: { dmg: 1.5, rof: 13, speed: 850, spread: 0.015, ammo: 700 },
+    chassis: {
+      trackW: 0.66, thickness: 0.09, sag: 0,
+      // eight axles of DOUBLE interleaved 860mm wheels at ~0.53m pitch, a
+      // high front sprocket, a rear idler and no return rollers: the top run
+      // lies on the wheels, as on the Tiger, but the discs are bigger and
+      // spaced wider, so a sliver of daylight shows between alternate pairs
+      sprocket: { z: 2.80, y: 0.74, r: 0.40 },
+      idler: { z: -2.96, y: 0.66, r: 0.33 },
+      road: { count: 8, r: 0.43, y: 0.52, from: 1.86, to: -1.86 },
+      rollers: { count: 0 },
+      interleave: [0.2, -0.1],
+    },
+    shape: {
+      hull: 'panther', turret: 'panther', mantlet: 'chin',
+      // the cast cupola sits left-rear, bulging past the sloped turret side
+      cupolaLeft: true, cupola: { r: 0.30, h: 0.24, x: 0.52, z: -0.42, sides: 16 },
+      muzzleBrake: 'double', bowMg: true, sideSkirts: true,
+    },
+    // late 1944: Dunkelgelb three-tone, the Tiger's coat (C-11)
+    color: PAINT_DE_DUNKELGELB,
+    scheme: SCHEME_DE_THREE_TONE,
+    desc: 'Long 55-degree glacis, sloped sponsons and the long 75mm L/70. Lethal front, thin flanks.',
+    // the Balkenkreuz on the skirts/sponson and a three-digit turret number
+    // (*verify* per unit)
+    markings: [
+      { number: '412', frame: 'turret', side: 'both', y: 0.40, z: -0.45, height: 0.32, color: MARK_DE_RED },
+      { glyph: 'de_balkenkreuz', frame: 'hull', side: 'both', y: 1.50, z: -1.10, size: 0.46 },
+    ],
+  },
+  sherman76: {
+    id: 'sherman76', name: 'M4A3(76)W Sherman', nation: 'USA',
+    klass: 'Medium Tank', tier: 3,
+    price: { silver: 6000, rp: 2400 },
+    // Ford GAA 450-500 hp, 42 km/h; a light, quick 32 tonnes
+    maxSpeed: 12.5, accel: 6.2, turnRate: 1.4,
+    traverse: 2.3, reload: 6.0, crew: 5,
+    mass: 32.0, maxReverse: 4.2,
+    // five-speed synchromesh into a controlled differential: no pivot turn
+    neutralSteer: false, climbMax: 0.58,
+    // Westinghouse gyrostabiliser in elevation, as on the Stuart
+    stabiliser: { vertical: 0.6 }, dispersion: 0.0011,
+    gearbox: { forward: [0.14, 0.28, 0.48, 0.72, 1], reverse: [1], shift: 0.45 },
+    consumables: { repair: 3, fpe: 2, firstAid: 2, smoke: 3 },
+    // VVSS: 5.89 (hull) / 7.47-7.54 (gun forward) x 2.62 x 2.97m over the
+    // cupola (Hunnicutt, 'Sherman'). Hull ROOF 1.88m: this is the TALL one —
+    // the hull side alone is 0.85m of slab above the bogies, and a T23
+    // turret sits on top of that.
+    hull: { w: 2.62, h: 0.95, len: 5.89, trackH: 0.93, clear: 0.43, sideDeg: 0 },
+    // T23: 1.75m ring; the casting runs 1.0m ahead of it and 1.65m behind
+    // into the bustle (turretShell 'castT23')
+    turret: { w: 2.10, h: 0.82, len: 2.65, offZ: 0.15 },
+    // 76mm M1A1/A2: 1.63m of muzzle ahead of the nose
+    gunLen: 3.48,
+    gunMount: { x: 0, y: 0.40, z: 0.95 },
+    armor: {
+      // 47-degree one-piece glacis, 63.5mm (the "W" hull); 38 sides and
+      // rear, 19 deck. The rounded cast final-drive housing below it is
+      // 51-108mm and folds into the same front zone.
+      hull: { front: 64, side: 38, rear: 38, top: 19 },
+      // T23: 64mm all round with 13 degrees on the sides, the front curved
+      // round the shield; 25mm roof
+      turret: { front: 64, side: 64, rear: 64, top: 25 },
+      hullSlope: { front: 47, side: 0, rear: 10 },
+      turretSlope: { front: 30, side: 13, rear: 0 },
+      // M62 combination gun mount, 89mm
+      mantlet: 89,
+    },
+    shells: {
+      // M62 APC (APCBC-HE), 792 m/s: 93mm at 500yd / 30 deg -> 112 on the
+      // house scale (M26 M82: 120 -> 145)
+      AP: { kind: 'APHE', caliber: 76, pen: 112, speed: 792, count: 40 },
+      HE: { kind: 'HE', caliber: 76, pen: 20, speed: 800, splash: 4.5, count: 25 },
+      // M93 HVAP, 1,036 m/s: 157mm at 500yd / 30 deg -> 190
+      APCR: { kind: 'APCR', caliber: 76, pen: 190, speed: 1036, count: 6 },
+    },
+    // 71 rounds of 76mm in the wet ('W') racks under the turret floor
+    ammoCap: 71,
+    mg: { dmg: 1.5, rof: 13, speed: 850, spread: 0.015, ammo: 700 },
+    chassis: {
+      trackW: 0.42, thickness: 0.08, sag: 0.03,
+      // three VVSS bogies, two 508mm wheels each (0.58m inside a bogie,
+      // ~1.46m bogie to bogie), the return roller up on the trailing end of
+      // each bogie, a HIGH front sprocket and a trailing idler near the ground
+      sprocket: { z: 2.52, y: 0.70, r: 0.31 },
+      idler: { z: -2.56, y: 0.39, r: 0.26 },
+      road: { at: [1.75, 1.17, 0.29, -0.29, -1.17, -1.75], r: 0.254, y: 0.334 },
+      rollers: { count: 3, r: 0.11, y: 0.76, from: 1.16, to: -1.76 },
+      bogies: 'volute',
+    },
+    shape: {
+      hull: 'sherman', turret: 'castT23', cast: true,
+      // US practice: commander right (the vision cupola), loader's hatch left
+      cupolaRight: true, cupola: { r: 0.32, h: 0.22, z: -0.42 },
+      loaderHatch: { r: 0.24, x: 0.48, z: -0.30 },
+      muzzleBrake: 'single', bowMg: true, headlights: true,
+    },
+    // 1944-45: US Olive Drab (C-11)
+    color: PAINT_US_OD,
+    desc: 'Tall hull, 47-degree glacis and the long 76mm. Fast turret, fast reload, thin sides.',
+    // white stars on the hull sides and turret, the cerise panel on the deck
+    markings: [
+      { glyph: 'us_star_white', frame: 'turret', side: 'both', y: 0.42, z: -0.45, size: 0.46 },
+      { glyph: 'us_star_white', frame: 'hull', side: 'both', y: 1.42, z: 0.35, size: 0.52 },
+      { glyph: 'solid', frame: 'hull', side: 'top', x: 0, z: -2.15, size: [1.10, 0.60], color: MARK_CERISE },
+    ],
+  },
+  is2: {
+    id: 'is2', name: 'IS-2 (1944)', nation: 'USSR',
+    klass: 'Heavy Tank', tier: 4,
+    price: { silver: 13000, rp: 6500 },
+    // V-2IS 520 hp, 37 km/h
+    maxSpeed: 10, accel: 4.2, turnRate: 1.0,
+    traverse: 1.1, reload: 18.0, crew: 4,
+    mass: 46, maxReverse: 3.0,
+    // eight forward speeds through a range box, two-stage planetary steering:
+    // no pivot turn
+    neutralSteer: false, climbMax: 0.58, dispersion: 0.0012,
+    gearbox: {
+      forward: [0.1, 0.17, 0.26, 0.37, 0.5, 0.64, 0.82, 1],
+      reverse: [0.5, 1], shift: 0.6,
+    },
+    consumables: { repair: 3, fpe: 2, firstAid: 2, smoke: 2 },
+    // 6.77 (hull) / 9.83 (gun forward) x 3.07 x 2.73m (Zaloga, 'IS-2 Heavy
+    // Tank'; Wikipedia gives 9.90 / 3.09 / 2.73). Hull ROOF 1.73m: long and
+    // low, the turret ring well forward and a 3m overhang of 122mm in front.
+    hull: { w: 3.07, h: 0.80, len: 6.77, trackH: 0.93, clear: 0.42, sideDeg: 15 },
+    // a big rounded casting on a 1.8m ring, 1.05m ahead / 1.42m behind it
+    turret: { w: 2.36, h: 0.80, len: 2.55, offZ: 0.45 },
+    // D-25T (L/43, 5.6m with the brake): muzzle 3.06m ahead of the nose
+    gunLen: 5.05,
+    gunMount: { x: 0, y: 0.38, z: 0.95 },
+    armor: {
+      // 1944 'straight' nose: 120mm upper at 60 deg, 100mm lower at 30;
+      // upper sides 90 at 15, rear 60 at ~45, roof 30
+      hull: { front: 120, side: 90, rear: 60, top: 30 },
+      // cast: 100 front, 90 sides at 20, 90 rear, 30 roof; the gun
+      // mantlet 120 (Wikipedia; Zaloga gives 100 + the gun's own mantle)
+      turret: { front: 100, side: 90, rear: 90, top: 30 },
+      hullSlope: { front: 60, side: 15, rear: 45 },
+      turretSlope: { front: 30, side: 20, rear: 30 },
+      mantlet: 120,
+    },
+    shells: {
+      // BR-471 (sharp-nosed APHE), 795 m/s: 155mm at 500m / 0 deg (Soviet
+      // firing table) -> 175 at the muzzle on the house scale
+      AP: { kind: 'APHE', caliber: 122, pen: 175, speed: 795, count: 10 },
+      // OF-471 HE-frag, 800 m/s, 3.6kg of TNT: the IS-2's real weapon
+      HE: { kind: 'HE', caliber: 122, pen: 40, speed: 800, splash: 8, count: 14 },
+      // BR-471B, the blunt APHE with a ballistic cap (spring 1945): better
+      // on sloped plate in life, a little more pen here
+      APHE: { kind: 'APHE', caliber: 122, pen: 190, speed: 795, count: 4 },
+    },
+    // 28 two-piece rounds — the reason the reload is what it is
+    ammoCap: 28,
+    mg: { dmg: 1.5, rof: 13, speed: 850, spread: 0.015, ammo: 900 },
+    chassis: {
+      trackW: 0.65, thickness: 0.08, sag: 0.03,
+      // six 550mm wheels on torsion bars at ~0.84m, three return rollers, a
+      // toothed REAR sprocket and a front idler (KV practice)
+      sprocket: { z: -2.96, y: 0.66, r: 0.33 },
+      idler: { z: 2.92, y: 0.60, r: 0.30 },
+      road: { count: 6, r: 0.275, y: 0.355, from: 2.06, to: -2.14 },
+      rollers: { count: 3, r: 0.11, y: 0.74, from: 1.62, to: -1.44 },
+    },
+    shape: {
+      hull: 'is2', turret: 'is2Cast', cast: true, mantlet: 'wide',
+      // commander left-rear (cupola), loader's hatch right
+      cupolaLeft: true, cupola: { r: 0.30, h: 0.21, x: 0.52, z: -0.55 },
+      loaderHatch: { r: 0.25, x: -0.50, z: -0.35 },
+      muzzleBrake: 'double', fuelDrums: 'fender',
+    },
+    // 1944-45: 4BO (C-11)
+    color: PAINT_SU_4BO,
+    desc: 'Low heavy hull, 60-degree nose and a 122mm that one-shots anything. Slow to reload.',
+    // a white turret number and the Berlin-1945 white roof cross (*verify*)
+    markings: [
+      { number: '25', frame: 'turret', side: 'both', y: 0.42, z: -0.20, height: 0.30, color: MARK_WHITE },
+      { glyph: 'solid', frame: 'turret', side: 'top', x: 0, z: 0.28, size: [0.90, 0.12], color: MARK_WHITE },
+      { glyph: 'solid', frame: 'turret', side: 'top', x: 0, z: 0.28, size: [0.12, 0.90], color: MARK_WHITE },
+    ],
+  },
+  cromwell: {
+    id: 'cromwell', name: 'Cromwell Mk. IV', nation: 'Britain',
+    klass: 'Cruiser Tank', tier: 2,
+    price: { silver: 3000, rp: 1100 },
+    // Meteor 600 hp in 28 tonnes, 64 km/h on the 3.7:1 final drive: the
+    // fastest tank of the war, and it should feel like it
+    maxSpeed: 17, accel: 8.5, turnRate: 1.7,
+    traverse: 2.0, reload: 4.5, crew: 5,
+    mass: 27.9, maxReverse: 5.0,
+    // Merritt-Brown regenerative box: it pivots
+    neutralSteer: true, climbMax: 0.62, dispersion: 0.0014,
+    gearbox: { forward: [0.13, 0.26, 0.45, 0.7, 1], reverse: [1], shift: 0.45 },
+    consumables: { repair: 3, fpe: 1, firstAid: 1, smoke: 3 },
+    // 6.35 x 2.91 x 2.49m (Wikipedia; Fletcher, 'Cromwell Cruiser Tank'):
+    // a low box on five big Christie wheels. Hull ROOF 1.73m, the turret
+    // roof 2.39 and the hatches 2.49.
+    hull: { w: 2.91, h: 0.81, len: 6.35, trackH: 0.92, clear: 0.41, sideDeg: 0 },
+    // a slab-sided welded box on a 1.52m ring
+    turret: { w: 1.98, h: 0.66, len: 2.0, offZ: 0.30 },
+    // 75mm Mk V (L/36.5): the muzzle only just clears the nose
+    gunLen: 2.10,
+    gunMount: { x: 0, y: 0.33, z: 0.90 },
+    armor: {
+      // a VERTICAL 64mm driver's plate (no slope worth the name), 57mm nose
+      // below it; sides 25 + a 14mm outer plate over the suspension, 32
+      // rear, 20 deck
+      hull: { front: 64, side: 32, rear: 32, top: 20 },
+      // 76mm front, 63 sides, 57 rear, 20 roof, all upright
+      turret: { front: 76, side: 63, rear: 57, top: 20 },
+      hullSlope: { front: 0, side: 0, rear: 0 },
+      turretSlope: { front: 0, side: 0, rear: 0 },
+      mantlet: 76,
+    },
+    shells: {
+      // US 75mm ammunition. M72 AP shot, 619 m/s: 76mm at 500yd / 30 deg ->
+      // 92; M61 APC (APCBC-HE) 66mm -> 80; M48 HE, 463 m/s
+      AP: { kind: 'AP', caliber: 75, pen: 92, speed: 619, count: 25 },
+      HE: { kind: 'HE', caliber: 75, pen: 22, speed: 463, splash: 5, count: 30 },
+      APHE: { kind: 'APHE', caliber: 75, pen: 80, speed: 618, count: 9 },
+    },
+    ammoCap: 64,
+    mg: { dmg: 1.5, rof: 13, speed: 850, spread: 0.015, ammo: 900 },
+    chassis: {
+      trackW: 0.394, thickness: 0.06, sag: 0.03,
+      // Christie: five 813mm wheels with daylight between them, no return
+      // rollers, a rear sprocket and a front idler
+      sprocket: { z: -2.78, y: 0.60, r: 0.32 },
+      idler: { z: 2.80, y: 0.55, r: 0.30 },
+      road: { count: 5, r: 0.405, y: 0.465, from: 2.0, to: -1.95 },
+      rollers: { count: 0 },
+    },
+    shape: {
+      hull: 'cromwell', turret: 'cromwellBox',
+      // British practice: commander and gunner right of the gun, loader left;
+      // driver on the RIGHT of the hull, the Besa gunner on the left
+      cupolaRight: true, cupola: { r: 0.30, h: 0.10, z: -0.45, sides: 12 },
+      loaderHatch: { r: 0.24, x: 0.45, z: -0.40 },
+      muzzleBrake: 'single', bowMg: true, bowMgLeft: true, driverRight: true,
+      headlights: true, turretBin: true,
+    },
+    // 1944: SCC 15 olive drab (C-11)
+    color: PAINT_UK_SCC15,
+    desc: 'Fast low box on five big Christie wheels. Upright armour, quick gun — flank and hustle.',
+    // NW Europe 1944: the Allied white star on the hull sides and on the
+    // engine deck for the air (*verify* per unit)
+    markings: [
+      { glyph: 'us_star_white', frame: 'hull', side: 'both', y: 1.35, z: 0.45, size: 0.44 },
+      { glyph: 'us_star_white', frame: 'hull', side: 'top', x: 0, z: -2.15, size: 0.80 },
     ],
   },
 };
@@ -1418,6 +1732,67 @@ function hullStations(spec) {
       station(-f, wLow * 0.92, y0 + 0.20, wSp * 0.96, ySp, wR * 0.96, yR - 0.09),
     ];
   }
+  if (kind === 'panther') {
+    // Panther: a SHARP nose beam where two 55-degree plates meet — the lower
+    // one running back down to the belly, the upper one (80mm) all the way up
+    // to the deck 1.39m behind the nose. Full width: the glacis closes the
+    // sponsons too, and from there back the upper sides lean in at 30 degrees.
+    const yNose = 0.95;
+    const zDeck = f - (yR - yNose) * Math.tan(55 * DEG);
+    const zBelly = f - (yNose - y0) * Math.tan(55 * DEG);
+    const yAt = (z) => yNose + (f - z) / Math.tan(55 * DEG);
+    return [
+      station(f, wLow * 0.96, yNose - 0.05, wLow * 1.0, yNose - 0.01, wLow * 0.97, yNose + 0.03),
+      station(zBelly, wLow, y0, wSp, Math.min(ySp, yAt(zBelly) - 0.12), wSp - 0.12, yAt(zBelly)),
+      station(zDeck, wLow, y0, wSp, ySp, wR, yR),
+      station(-2.95, wLow, y0, wSp, ySp, wR, yR),
+      // rear plate 40mm at 30 degrees, leaning in toward the bottom
+      station(-f, wLow * 0.97, y0 + 0.62, wSp * 0.99, ySp, wR * 0.99, yR - 0.03),
+    ];
+  }
+  if (kind === 'sherman') {
+    // M4A3: the rounded cast final-drive housing across the bottom of the
+    // nose, then ONE 47-degree glacis (the large-hatch 'W' hull) to a flat
+    // deck at 1.88m. Sponson sides vertical and flush with the track line.
+    return [
+      station(f, wLow * 0.90, 0.66, wLow * 0.97, 0.88, wLow * 0.93, 0.98),
+      station(f - 0.10, wLow, 0.48, wSp * 0.99, ySp - 0.01, wR * 0.99, 1.06),
+      station(f - 0.20, wLow, y0, wSp, ySp, wR, 1.14),
+      station(f - 1.06, wLow, y0, wSp, ySp, wR, yR),
+      station(-2.62, wLow, y0, wSp, ySp, wR, yR),
+      station(-f, wLow * 0.95, y0 + 0.26, wSp * 0.99, ySp, wR * 0.99, yR - 0.10),
+    ];
+  }
+  if (kind === 'is2') {
+    // IS-2 1944: the 'straightened' nose — a 100mm lower plate at 30
+    // degrees up to a narrow nose beam, then ONE 120mm plate at 60 degrees
+    // to the deck. The upper sides lean in 15 degrees; the long engine deck
+    // falls away at the back into a 45-degree rear plate.
+    const yNose = 0.95;
+    const zLow = f - (yNose - y0) * Math.tan(30 * DEG);
+    const zDeck = f - (yR - yNose) * Math.tan(60 * DEG);
+    const yAt = (z) => yNose + (f - z) / Math.tan(60 * DEG);
+    return [
+      station(f, wLow * 0.96, yNose - 0.06, wSp * 0.84, yNose - 0.02, wR * 0.84, yNose + 0.02),
+      station(zLow, wLow, y0, wSp * 0.93, Math.min(ySp, yAt(zLow) - 0.05), wR * 0.95, yAt(zLow)),
+      station(zDeck, wLow, y0, wSp, ySp, wR, yR),
+      station(-2.30, wLow, y0, wSp, ySp, wR, yR),
+      station(-2.80, wLow, y0 + 0.04, wSp, ySp, wR, yR - 0.06),
+      station(-f, wLow * 0.95, y0 + 0.40, wSp * 0.98, ySp, wR * 0.96, yR - 0.42),
+    ];
+  }
+  if (kind === 'cromwell') {
+    // Cromwell: an UPRIGHT box. The whole front is the vertical 64mm driver's
+    // plate (the cap of the first station), a short sloped nose plate under
+    // it back to the belly and a short 20-degree glacis over it to the roof.
+    return [
+      station(f, wLow * 0.99, 0.84, wSp * 0.99, ySp, wR * 0.99, 1.50),
+      station(f - 0.30, wLow, 0.50, wSp, ySp, wR, yR),
+      station(f - 0.44, wLow, y0, wSp, ySp, wR, yR),
+      station(-2.95, wLow, y0, wSp, ySp, wR, yR),
+      station(-f, wLow * 0.97, y0 + 0.28, wSp * 0.99, ySp, wR * 0.99, yR - 0.05),
+    ];
+  }
   if (kind === 'pershing') {
     // M26: one clean 46-degree glacis over a short 0.63m run onto a wide flat
     // deck, with the 53-degree lower front falling out of the same loft. The
@@ -1861,7 +2236,7 @@ function exhaust(bins, spec, w, len, fenderY) {
   const kind = spec.shape.hull;
   const zBack = -len / 2 + 0.06;
   const y = fenderY + 0.12;
-  if (kind === 'slab') {
+  if (kind === 'slab' || kind === 'panther') {
     for (const sx of [-1, 1]) {
       add(bins.hullBare, tubeY(0.09, 0.11, 0.62, 12, sx * w * 0.3, y + 0.2, zBack));
       add(bins.hullBare, tubeY(0.13, 0.13, 0.08, 12, sx * w * 0.3, y + 0.53, zBack));
@@ -1880,6 +2255,9 @@ function exhaust(bins, spec, w, len, fenderY) {
     return;
   }
   add(bins.hullBare, tubeX(0.11, 0.11, w * 0.52, 12, 0, fenderY + 0.06, zBack - 0.02));
+  // (the Cromwell's exhaust is the cowl across the top of the rear plate,
+  // flush with it: no tailpipes standing 30 cm out past the 6.35 m)
+  if (kind === 'cromwell') return;
   for (const sx of [-1, 1]) {
     add(bins.hullBare, tubeZ(0.06, 0.06, 0.3, 8, sx * w * 0.2, fenderY + 0.06, zBack - 0.2));
   }
@@ -2108,6 +2486,73 @@ function turretShell(spec, bins) {
     }
     pts.push([hw * 0.98, -hl], [-hw * 0.98, -hl]);
     add(bins.turArmour, prismY(pts, t.h, 0.97));
+    return;
+  }
+  if (kind === 'panther') {
+    // Panther: welded plate, NARROW at the front plate and widening aft —
+    // the plan is a long trapezoid, 1.05m ahead of the ring and 1.45m behind
+    // it — with every wall leaning in: the front 11 degrees, the sides and
+    // rear 25. Two rings, so each plate is one flat facet.
+    const zF = 1.05;
+    const zB = -1.45;
+    const plan = [
+      [0, zF], [hw * 0.70, zF], [hw * 0.97, -0.20], [hw, -1.05], [hw * 0.88, zB],
+      [-hw * 0.88, zB], [-hw, -1.05], [-hw * 0.97, -0.20], [-hw * 0.70, zF],
+    ];
+    const tan = (d) => Math.tan(d * DEG) * t.h;
+    add(bins.turArmour, loftYRings([
+      { y: 0, pts: plan },
+      { y: t.h, pts: insetPlan(plan, tan(25), tan(11), tan(25)) },
+    ]));
+    return;
+  }
+  if (kind === 'castT23') {
+    // M4A3(76)W's T23: a casting with a rounded nose round the gun shield,
+    // near-upright sides and a deep bustle (1.65m behind the ring) closed by
+    // a rounded rear — the high, long turret that makes a 76 Sherman.
+    const zF = 1.00;
+    const zB = -1.65;
+    const plan = smoothClosed([
+      [0, zF], [hw * 0.66, zF * 0.92], [hw, 0.20], [hw, -0.85], [hw * 0.90, zB * 0.92],
+      [hw * 0.55, zB], [-hw * 0.55, zB], [-hw * 0.90, zB * 0.92], [-hw, -0.85],
+      [-hw, 0.20], [-hw * 0.66, zF * 0.92],
+    ], 1);
+    add(cast, loftYRings([
+      { y: 0, pts: insetPlan(plan, 0.04, 0.04, 0.04) },
+      { y: t.h * 0.40, pts: plan },
+      { y: t.h * 0.80, pts: insetPlan(plan, 0.08, 0.10, 0.07) },
+      { y: t.h, pts: insetPlan(plan, 0.16, 0.20, 0.13) },
+    ]));
+    return;
+  }
+  if (kind === 'is2Cast') {
+    // IS-2: a big rounded casting, widest across the cheeks just behind the
+    // mantlet and rounding off into a short bustle, its walls rolling in hard
+    // toward a domed roof.
+    const zF = 1.05;
+    const zB = -1.42;
+    const plan = smoothClosed([
+      [0, zF], [hw * 0.82, zF * 0.78], [hw, 0.0], [hw * 0.93, -0.85], [hw * 0.62, zB * 0.96],
+      [0, zB], [-hw * 0.62, zB * 0.96], [-hw * 0.93, -0.85], [-hw, 0.0], [-hw * 0.82, zF * 0.78],
+    ], 1);
+    add(cast, loftYRings([
+      { y: 0, pts: insetPlan(plan, 0.05, 0.05, 0.05) },
+      { y: t.h * 0.30, pts: plan },
+      { y: t.h * 0.70, pts: insetPlan(plan, 0.17, 0.15, 0.14) },
+      { y: t.h, pts: insetPlan(plan, 0.36, 0.30, 0.30) },
+    ]));
+    return;
+  }
+  if (kind === 'cromwellBox') {
+    // Cromwell: a slab-sided welded box, flat front, upright walls, the front
+    // corners chamfered — and a stowage bin hung on the rear (turretBin).
+    const zF = 0.95;
+    const zB = -1.05;
+    const pts = [
+      [0, zF], [hw * 0.86, zF], [hw, zF - 0.14], [hw, zB], [-hw, zB],
+      [-hw, zF - 0.14], [-hw * 0.86, zF],
+    ];
+    add(bins.turArmour, prismY(pts, t.h, 0.985));
     return;
   }
   add(bins.turArmour, prismY(ovalPts(hw, hl, 10, 1.04), t.h, 0.9));
@@ -2561,9 +3006,10 @@ function buildTankGeometry(spec) {
   // this roster sits on the left.
   const dz = Math.min(len * 0.5 - 0.55, t.offZ + t.len * 0.5 + 0.42);
   const dSeat = roofAt(stations, dz);
-  add(bins.hullSteel, boxAt(0.16, 0.08, 0.12, w * 0.2, dSeat.y + 0.04, dz));
-  add(bins.hullSteel, boxAt(0.19, 0.035, 0.05, w * 0.2, dSeat.y + 0.095, dz + 0.03));
-  visionGlass(glassAt.hull, w * 0.2, dSeat.y + 0.04, dz, 0.16, 0.08, 0.12, 0, 1);
+  const dx = sh.driverRight ? -w * 0.2 : w * 0.2;
+  add(bins.hullSteel, boxAt(0.16, 0.08, 0.12, dx, dSeat.y + 0.04, dz));
+  add(bins.hullSteel, boxAt(0.19, 0.035, 0.05, dx, dSeat.y + 0.095, dz + 0.03));
+  visionGlass(glassAt.hull, dx, dSeat.y + 0.04, dz, 0.16, 0.08, 0.12, 0, 1);
 
   // tow cable down one fender and the pioneer tools down the other: the
   // asymmetry is what real stowage looks like. The cable is bare, rusting wire.
@@ -2746,7 +3192,23 @@ function buildTankGeometry(spec) {
     }
     // mantlet: a cast ball on the Soviet guns, a slab on the riveted turrets.
     // It is bolted to the cradle rather than the gun, so it stays put.
-    if (sh.ballMantlet || sh.turret === 'hexCast' || sh.turret === 'castOval') {
+    if (sh.mantlet === 'chin') {
+      // Panther G's Topfblende: a half-round cast shield lying ACROSS the
+      // gun, with the thickened 'chin' along its lower edge that stops a
+      // round deflecting down through the hull roof
+      const mr = t.h * 0.40;
+      const mw = t.w * 0.46;
+      add(bins.gunArmour, tubeX(mr, mr, mw, 18, 0, 0, 0.02));
+      add(bins.gunArmour, boxAt(mw, mr * 0.55, 0.30, 0, -mr * 0.72, 0.08));
+      add(bins.gunArmour, tubeZ(rBase * 1.9, rBase * 1.7, 0.36, 14, 0, 0, mr * 0.75));
+    } else if (sh.mantlet === 'wide') {
+      // IS-2: a broad cast shield, rounded on every face, nearly half the
+      // turret's width, with a cast collar round the tube
+      const ball = new THREE.SphereGeometry(0.36, 18, 12);
+      ball.scale((t.w * 0.25) / 0.36, (t.h * 0.42) / 0.36, 0.78);
+      add(bins.gunArmour, ball.translate(0, 0, 0.08));
+      add(bins.gunArmour, tubeZ(rBase * 1.7, rBase * 1.5, 0.42, 14, 0, 0, 0.42));
+    } else if (sh.ballMantlet || sh.turret === 'hexCast' || sh.turret === 'castOval') {
       // absolute where a spec states one: a casemate's turret box is a thin
       // slab and scaling the mantlet off its height gives a pebble
       const ball = new THREE.SphereGeometry(sh.mantletR ?? t.h * 0.44, 18, 14);
@@ -2794,8 +3256,13 @@ function buildTankGeometry(spec) {
   if (sh.bowMg) {
     const my = ySpOf(stations) + (roofY - ySpOf(stations)) * 0.45;
     const mz = noseZAt(stations, my);
-    add(bins.hullArmour, tubeZ(0.15, 0.15, 0.16, 12, -w * 0.2, my, mz + 0.04));
-    add(bins.hullSteel, tubeZ(0.05, 0.05, 0.44, 10, -w * 0.2, my, mz + 0.24));
+    // the Cromwell is the exception: right-hand drive, the Besa on the LEFT
+    const mx = sh.bowMgLeft ? w * 0.2 : -w * 0.2;
+    add(bins.hullArmour, tubeZ(0.15, 0.15, 0.16, 12, mx, my, mz + 0.04));
+    // the Cromwell's ball sits in an UPRIGHT plate, where the full tube would
+    // stand half a metre proud of the nose
+    const mgL = sh.bowMgLeft ? 0.24 : 0.44;
+    add(bins.hullSteel, tubeZ(0.05, 0.05, mgL, 10, mx, my, mz + (sh.bowMgLeft ? 0.14 : 0.24)));
   }
   // the T-34's big rectangular driver's hatch, on the LEFT of the glacis
   if (sh.glacisHatch) {
@@ -2829,7 +3296,9 @@ function buildTankGeometry(spec) {
   if (sh.fuelDrums) {
     for (const side of [-1, 1]) {
       // outboard of the sloping side plate, where the brackets carry them
-      const dx = side * (wSpon + 0.01);
+      // 'fender': the IS-2's tanks ride ON the track guard against the hull
+      // side, inside the 3.07m overall width
+      const dx = side * (sh.fuelDrums === 'fender' ? wSpon - 0.19 : wSpon + 0.01);
       add(bins.hullSteel, tubeZ(0.2, 0.2, 0.74, 14, dx, fenderY + 0.2, -len * 0.34));
       // banding hoops, so a drum is a drum rather than a peg
       for (const bz of [-0.26, 0.26]) {
@@ -2858,6 +3327,10 @@ function buildTankGeometry(spec) {
         0.04, 0.3, 0.04, sx * t.w * 0.3, t.h * 0.5, -t.len * 0.6,
       ));
     }
+  }
+  if (sh.turretBin) {
+    // the Cromwell's big stowage bin across the turret rear
+    add(bins.turSteel, boxAt(t.w * 0.86, t.h * 0.62, 0.30, 0, t.h * 0.42, -t.len * 0.525 - 0.16));
   }
   if (sh.unditchLog) {
     add(bins.hullMatt, tubeZ(
@@ -2935,6 +3408,279 @@ function cachedTankGeometry(spec) {
     geoCache.set(key, geo);
   }
   return geo;
+}
+
+// ---------------------------------------------------------------------------
+// Shadow casters (perf, wave 5)
+// ---------------------------------------------------------------------------
+// A battle tank used to put ~15 meshes into every shadow map (one per material
+// bin), which made tanks most of a combined battle's 186-196 casters. The
+// depth pass does not care about materials, so a battle build casts through
+// PROXIES instead: one position-only geometry per moving frame (hull, turret,
+// gun, recoil) and shadow side, merged from the bins that frame carries, plus
+// one merged spinning-wheel proxy and the belt itself. That is 6 casters per
+// tank. The bins keep drawing the colour pass and stop casting.
+//
+// A proxy is drawn ONLY by the shadow map: its geometry's draw range is empty
+// (count 0) and onBeforeShadow / onAfterShadow open it for the depth draw and
+// close it again, so the colour pass, the AO G-buffer and any override pass
+// issue no draw for it (three skips zero-count draws), raycasts never hit it,
+// and its bounds equal the parts it stands for. The proxy's own material is a
+// colourless basic one that only carries the shadow side.
+//
+// The moving running gear (belt and wheel proxy) gets customDepthMaterial /
+// customDistanceMaterial with the same vertex movement as its colour shader
+// (RG_*_MAIN), driven by the same morph influences, so link and wheel shadows
+// move with the links and wheels.
+const SHADOW_SIDE_OF = { [THREE.FrontSide]: THREE.BackSide, [THREE.BackSide]: THREE.FrontSide, [THREE.DoubleSide]: THREE.DoubleSide };
+const proxyMaterials = new Map(); // shadow side -> material
+function proxyMaterial(side) {
+  let m = proxyMaterials.get(side);
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+    m.name = 'shadow proxy';
+    m.shadowSide = side;
+    markShared(m);
+    proxyMaterials.set(side, m);
+  }
+  return m;
+}
+
+// perf2 fix: keep the proxies out of every colour / AO / override pass list.
+// three builds a frame's render list (which skips a material with
+// visible=false) BEFORE its shadow pass, and the shadow pass checks the same
+// flag, so the proxy materials are made visible for the shadow pass only:
+// a battle wraps its renderer's shadowMap.render once. Without the wrapper a
+// proxy stays visible and only its empty draw range keeps it off screen (the
+// old behaviour: an empty draw with full program/uniform setup per pass).
+function setProxyMaterialsVisible(v) {
+  for (const m of proxyMaterials.values()) m.visible = v;
+}
+export function installShadowProxyGate(renderer) {
+  const sm = renderer && renderer.shadowMap;
+  // the mark sits on the shadowMap, not on the function: ?bench wraps
+  // render too, and a mark on the function would be lost under its wrapper
+  if (!sm || typeof sm.render !== 'function' || sm.__proxyGate) return false;
+  sm.__proxyGate = true;
+  const render = sm.render;
+  const gated = function gatedShadowRender(...args) {
+    setProxyMaterialsVisible(true);
+    try {
+      return render.apply(this, args);
+    } finally {
+      setProxyMaterialsVisible(false);
+    }
+  };
+  gated.proxyGate = true;
+  sm.render = gated;
+  return true;
+}
+
+// perf2 fix (P-03 / P-04 for tanks, like groundUnits gateShadows): a tank's
+// casters (proxies + belt) stay in the shadow pass list only while the hull
+// is inside the sun's shadow box, with a 30 m margin for the box moving
+// between checks. Checked four times a second. `inBox` is scenery's
+// inShadowBox (passed in, so this file does not pull in the world module).
+export function gateTankShadows(tank, dt, inBox) {
+  const g = tank && tank.group;
+  if (!g || typeof inBox !== 'function') return;
+  let st = g.userData.shadowGate;
+  if (!st) {
+    const list = [];
+    g.traverse((o) => { if (o.isMesh && o.castShadow) list.push(o); });
+    st = { t: 0, on: true, list };
+    g.userData.shadowGate = st;
+  }
+  st.t -= dt;
+  if (st.t > 0) return;
+  st.t = 0.25;
+  const p = g.position;
+  const want = inBox(p.x, p.y + 1.5, p.z, (tank.radius || 4) + 30);
+  if (want === st.on) return;
+  st.on = want;
+  for (let i = 0; i < st.list.length; i++) st.list[i].castShadow = want;
+}
+
+function openProxy(renderer, object, camera, shadowCamera, geometry) {
+  geometry.drawRange.count = Infinity;
+}
+function closeProxy(renderer, object, camera, shadowCamera, geometry) {
+  geometry.drawRange.count = 0;
+}
+
+// Position (and the listed extra attributes) of several geometries, merged
+// into one indexed geometry. Non-indexed parts get a running index.
+function mergeForShadow(list, extra = []) {
+  let nv = 0;
+  let ni = 0;
+  for (const g of list) {
+    const n = g.attributes.position.count;
+    nv += n;
+    ni += g.index ? g.index.count : n;
+  }
+  const pos = new Float32Array(nv * 3);
+  const ext = extra.map((name) => {
+    const size = list[0].attributes[name].itemSize;
+    return { name, size, data: new Float32Array(nv * size) };
+  });
+  const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+  let v = 0;
+  let k = 0;
+  for (const g of list) {
+    const p = g.attributes.position;
+    const n = p.count;
+    for (let i = 0; i < n; i++) {
+      pos[(v + i) * 3] = p.getX(i);
+      pos[(v + i) * 3 + 1] = p.getY(i);
+      pos[(v + i) * 3 + 2] = p.getZ(i);
+    }
+    for (const e of ext) {
+      const a = g.attributes[e.name];
+      for (let i = 0; i < n; i++) {
+        for (let c = 0; c < e.size; c++) e.data[(v + i) * e.size + c] = a.getComponent(i, c);
+      }
+    }
+    if (g.index) {
+      const ia = g.index;
+      for (let i = 0; i < ia.count; i++) idx[k++] = ia.getX(i) + v;
+    } else {
+      for (let i = 0; i < n; i++) idx[k++] = v + i;
+    }
+    v += n;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  for (const e of ext) out.setAttribute(e.name, new THREE.BufferAttribute(e.data, e.size));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  out.computeBoundingBox();
+  out.computeBoundingSphere();
+  return out;
+}
+
+// Depth-only twins of the running-gear vertex stage: the same displacement,
+// no normals (the depth shaders have none).
+const RG_BELT_DEPTH_PARS = RG_BELT_PARS.replace('varying vec3 vRgN;', '');
+const RG_BELT_DEPTH_MAIN = `
+      {
+        float rgD = RG_DIST(position.x);
+        if (rgD != 0.0) {
+          vec4 p0 = rgBeltAt(aBelt.x);
+          vec4 p1 = rgBeltAt(aBelt.x - rgD);
+          vec2 q0 = p0.xy + p0.zw * aBelt.y;
+          vec2 q1 = p1.xy + p1.zw * aBelt.y;
+          transformed.z += q1.x - q0.x;
+          transformed.y += q1.y - q0.y;
+        }
+      }`;
+const RG_SPIN_DEPTH_MAIN = `
+      {
+        float rgD = RG_DIST(position.x);
+        if (rgD != 0.0) {
+          float ang = rgD * aSpin.z;
+          float c = cos(ang);
+          float sn = sin(ang);
+          float dy = position.y - aSpin.x;
+          float dz = position.z - aSpin.y;
+          transformed.y += dy * c - dz * sn - dy;
+          transformed.z += dy * sn + dz * c - dz;
+        }
+      }`;
+
+export function patchRunningGearDepth(shader, kind) {
+  const belt = kind === 'belt';
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `#include <common>
+      ${RG_COMMON}
+      ${belt ? RG_BELT_DEPTH_PARS : RG_SPIN_PARS}`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      ${belt ? RG_BELT_DEPTH_MAIN : RG_SPIN_DEPTH_MAIN}`);
+}
+
+// One depth + one distance material per kind (and per belt path), shared.
+const rgDepthMats = new Map();
+export function runningGearDepthMaterials(kind, belt = null) {
+  const key = kind === 'belt' ? `belt|${belt.id}` : 'spin';
+  let pair = rgDepthMats.get(key);
+  if (pair) return pair;
+  const uniforms = kind === 'belt' ? {
+    uBeltPath: { value: belt.texture },
+    uBeltInfo: { value: new THREE.Vector2(belt.perim, belt.samples) },
+  } : null;
+  const make = (m) => {
+    m.name = `running gear ${kind} (shadow)`;
+    m.onBeforeCompile = (shader) => {
+      if (uniforms) Object.assign(shader.uniforms, uniforms);
+      patchRunningGearDepth(shader, kind);
+      m.userData.shader = shader;
+    };
+    m.customProgramCacheKey = () => `rg1depth${kind}`;
+    markShared(m);
+    return m;
+  };
+  pair = {
+    depth: make(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking })),
+    distance: make(new THREE.MeshDistanceMaterial()),
+  };
+  rgDepthMats.set(key, pair);
+  return pair;
+}
+
+// The per-spec proxy geometry: { key: [{ frame, side, geo }] } built once and
+// stamped shared like the bins it was made from.
+const STATIC_BINS = [
+  'hullArmour', 'hullSteel', 'hullGear', 'hullTrack', 'hullTyre', 'hullBare', 'hullMatt',
+  'turArmour', 'turCast', 'turSteel', 'gunSteel', 'gunArmour', 'recSteel', 'gunCrown',
+];
+function shadowSideOf(m) {
+  return m.shadowSide != null ? m.shadowSide : SHADOW_SIDE_OF[m.side];
+}
+const FRAME_OF = {
+  hullArmour: 'hull', hullSteel: 'hull', hullGear: 'hull', hullTrack: 'hull', hullTyre: 'hull',
+  hullBare: 'hull', hullMatt: 'hull',
+  turArmour: 'turret', turCast: 'turret', turSteel: 'turret',
+  gunSteel: 'gun', gunArmour: 'gun', recSteel: 'recoil', gunCrown: 'recoil',
+};
+function shadowProxies(cached, mats) {
+  if (cached.shadowProxies) return cached.shadowProxies;
+  const geo = cached.bins;
+  const groups = new Map(); // frameName|side -> { frame, side, list }
+  for (const key of STATIC_BINS) {
+    const g = geo[key];
+    if (!g || !mats[key]) continue;
+    const side = shadowSideOf(mats[key]);
+    const fk = `${FRAME_OF[key]}|${side}`;
+    let e = groups.get(fk);
+    if (!e) {
+      e = { frame: FRAME_OF[key], side, list: [] };
+      groups.set(fk, e);
+    }
+    e.list.push(g);
+  }
+  const out = [];
+  for (const e of groups.values()) {
+    const g = mergeForShadow(e.list);
+    g.drawRange.count = 0;
+    markSharedGeometry(g);
+    out.push({ frame: e.frame, side: e.side, geo: g, kind: null });
+  }
+  // the spinning wheels: tyres and gear in one, with their axles and the two
+  // zero morph targets that carry the per-side distances
+  const spin = ['wheelTyre', 'wheelGear'].filter((k) => geo[k] && mats[k]);
+  const bySide = new Map();
+  for (const k of spin) {
+    const side = shadowSideOf(mats[k]);
+    if (!bySide.has(side)) bySide.set(side, []);
+    bySide.get(side).push(geo[k]);
+  }
+  for (const [side, list] of bySide) {
+    const g = mergeForShadow(list, ['aSpin']);
+    addRunningGearMorphs(g);
+    g.drawRange.count = 0;
+    markSharedGeometry(g);
+    out.push({ frame: 'hull', side, geo: g, kind: 'spin' });
+  }
+  cached.shadowProxies = out;
+  return out;
 }
 
 // The coat a tank is built in. A tint is honoured only when it is a paint the
@@ -3101,14 +3847,49 @@ export function buildTankMesh(spec, tintColor = null, teamColor = 0x4f8fd0, opts
   turretGroup.add(gunGroup);
   group.add(turretGroup);
 
+  // a battle build casts through proxies (see shadowProxies); the hangar,
+  // cards and X-ray keep one caster per bin, as they always had
+  const proxied = opts.shadowProxies ?? battleBuild;
   group.traverse((o) => {
     if (o.isMesh) {
       // a decal lies on the plate: it takes the plate's shadow, casts none
       const decal = o.name === 'hullMarks' || o.name === 'turMarks';
-      o.castShadow = !decal;
+      o.castShadow = !decal && (!proxied || o === runningGear.belt);
       o.receiveShadow = true;
     }
   });
+  // the belt's shadow runs with the links; unproxied wheels spin theirs
+  if (runningGear.belt) {
+    const d = runningGearDepthMaterials('belt', cached.belt);
+    runningGear.belt.customDepthMaterial = d.depth;
+    runningGear.belt.customDistanceMaterial = d.distance;
+  }
+  if (!proxied) {
+    const d = runningGearDepthMaterials('spin');
+    for (const m of runningGear.wheels) {
+      m.customDepthMaterial = d.depth;
+      m.customDistanceMaterial = d.distance;
+    }
+  } else {
+    const frameGroup = { hull: group, turret: turretGroup, gun: gunGroup, recoil: recoilGroup };
+    for (const p of shadowProxies(cached, mats)) {
+      const m = new THREE.Mesh(p.geo, proxyMaterial(p.side));
+      m.name = 'shadowProxy';
+      m.userData.shadowProxy = true;
+      m.castShadow = true;
+      m.receiveShadow = false;
+      m.onBeforeShadow = openProxy;
+      m.onAfterShadow = closeProxy;
+      if (p.kind === 'spin') {
+        const d = runningGearDepthMaterials('spin');
+        m.customDepthMaterial = d.depth;
+        m.customDistanceMaterial = d.distance;
+        // driveRunningGear writes its influences with the real wheels'
+        runningGear.wheels.push(m);
+      }
+      frameGroup[p.frame].add(m);
+    }
+  }
 
   // V-10: the contact shadow, a child of the hull so it pitches and rolls
   // with it on a slope. One shared quad and material; this mesh only scales.

@@ -1,6 +1,6 @@
 import { WORLD_SIZE, terrainHeight, terrainFeatures } from '../world/terrain.js';
 import { activePreset } from '../world/presets.js';
-import { relabelHelp } from '../core/input.js'; // settings lane: current key names
+import { relabelHelp, keyLabel, input } from '../core/input.js'; // settings lane: current key names
 // The one airspeed scale every number the pilot reads goes through (the tape,
 // its stall mark, the gear limit), so the fallback below matches the battles.
 import { displaySpeedKmh, airDensity, RHO0 } from '../vehicles/planes.js';
@@ -705,6 +705,27 @@ export function markerShapeSvg(team, kind) {
 }
 
 let uid = 0;
+
+// mobile lane: core/touch.js marks a touch device on <html>
+function isTouchLayout() {
+  try {
+    return document.documentElement.classList.contains('ss-touch');
+  } catch (e) {
+    return false;
+  }
+}
+const TOUCH_HELP_TANK =
+  '<span>Left stick — drive · Drag — aim the gun</span>' +
+  '<span>FIRE — main gun · MG — machine gun (drag on either aims too)</span>' +
+  '<span>SIGHT — gunner sight · + / − — sight zoom · pinch — zoom</span>' +
+  '<span>AP / HE chips — shell · REPAIR (hold) · EXT · SMOKE · AID</span>' +
+  '<span>❚❚ — pause · MAP — tactical map · ⏏ (hold) — abandon</span>';
+const TOUCH_HELP_ARTY = '<span>ART — artillery strike</span>';
+const TOUCH_HELP_AIR =
+  '<span>Drag — point the aim, the plane follows · Left stick — roll / pitch</span>' +
+  '<span>FIRE — guns · ZOOM (hold) · THR+ / THR− — throttle</span>' +
+  '<span>BOMB · RKT · GEAR · FLAPS · BRAKE (hold) · WEP · VIEW — cockpit</span>' +
+  '<span>❚❚ — pause · MAP — tactical map · ⏏ (hold) — bail out</span>';
 
 export class HUD {
   constructor() {
@@ -1556,6 +1577,16 @@ export class HUD {
   }
 
   setHelp(html) {
+    // mobile lane: on a touch device the key list means nothing; the help
+    // names the on-screen controls instead (aircraft help mentions roll/pitch)
+    if (isTouchLayout()) {
+      // whole words only: the tank help's "Scroll" contains "roll"
+      const src = String(html || '');
+      const air = /\b(roll|pitch|bomb|flaps)\b/i.test(src);
+      const arty = !air && /\bartillery\b/i.test(src) ? TOUCH_HELP_ARTY : '';
+      this.helpPanel.innerHTML = '<b>CONTROLS</b>' + (air ? TOUCH_HELP_AIR : TOUCH_HELP_TANK + arty);
+      return;
+    }
     // the battle files write the default key names; print the bound ones
     this.helpPanel.innerHTML = '<b>CONTROLS</b>' + relabelHelp(html);
   }
@@ -3398,7 +3429,17 @@ export class HUD {
 
   setBigMap(visible) {
     this.bigMapVisible = !!visible;
+    if (this.bigMapVisible) this._bigMapHint();
     setShown(this.bigMap, this.bigMapVisible);
+  }
+
+  // The header names the key the map is bound to NOW (settings rebinding),
+  // or the tap that closes it on a touch device.
+  _bigMapHint() {
+    const el = this.bigMap?.querySelector?.('.bmHint');
+    if (!el) return;
+    const txt = isTouchLayout() ? 'TAP — close' : `${keyLabel(input.bindingOf('KeyM'))} — close`;
+    if (el.textContent !== txt) el.textContent = txt;
   }
 
   toggleBigMap() {

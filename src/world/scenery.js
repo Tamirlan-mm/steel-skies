@@ -12,7 +12,9 @@ import {
 } from './presets.js';
 import {
   installAtmosphere, makeHeightFog, HEIGHT_FOG_GLSL, CIRRUS_GLSL, makeCirrusUniforms, setCirrus, driftCirrus,
+  CLOUD_DECK_GLSL, CLOUD_SHADOW_K, setCloudShadowField, setCloudShadow, setCloudShadowDrift, clearCloudShadow,
 } from '../core/atmosphere.js';
+import { rainBed } from '../core/audio.js';
 import { hdriFor, loadHDRI, assetStatus, hdriRotationY, assetsEnabled } from '../core/assets.js';
 import { cloudVolumeFor, cloudFieldData, setActiveCloudVolume } from './clouds.js';
 import { rand } from '../core/utils.js';
@@ -20,10 +22,11 @@ import { getMaterialQuality, isSharedResource, markSharedGeometry } from '../cor
 import { landUseFor, edgePointAt } from './landuse.js';
 import { treeArchetypes, floraArchetype, hedgeClumpGeometry, farWoodGeometry } from './flora.js';
 import { buildingKit } from './buildings.js';
+import { buildTownSurfaces, townDisc } from './town.js';
 import { createGroundCover } from './groundcover.js';
 // the airfield registry: its buildings are solid to rounds and sight lines
 // (airfield.js never imports this file, so no cycle)
-import { activeAirfields } from './airfield.js';
+import { activeAirfields, groundHeightAt } from './airfield.js';
 
 // Sky, fog, lights, weather and the dressed landscape: woods, hedgerows,
 // orchards, villages, rocks, fences, telegraph lines, distant woodland and the
@@ -373,6 +376,9 @@ export function setupEnvironment(scene, opts = {}) {
   setActiveCloudVolume(cloudVol);
   // the erosion volume (~150 ms, once per session) while the battle loads
   if (cloudVol && getMaterialQuality() === 'high') cloudVol.ensureNoise();
+  // S-03: cloud shadows from the deck's own law (after cloudVolumeFor, which
+  // may have moved it to the fraction law)
+  configureCloudShadow(preset);
   envFailed = false;
   envDirty = !!(environment && sky);
   envClock = 0;
@@ -388,7 +394,9 @@ export function setupEnvironment(scene, opts = {}) {
   // the switch says, so the switch is honoured here (calibration.assets(false))
   if (envDirty && assetsEnabled()) {
     try {
-      hdriId = hdriFor(preset.biome || 'meadow', preset.todKey || 'noon', preset.weatherKey || 'clear');
+      // W-01: rain is lit by the grey-sky photograph (assets.js has no rain column)
+      const hdriWx = preset.weatherKey === 'rain' ? 'overcast' : (preset.weatherKey || 'clear');
+      hdriId = hdriFor(preset.biome || 'meadow', preset.todKey || 'noon', hdriWx);
       hdriTex = hdriId ? loadHDRI(hdriId) : null;
     } catch (err) {
       hdriId = null; hdriTex = null;
@@ -404,6 +412,7 @@ export function setupEnvironment(scene, opts = {}) {
   spawnStrips = spawnStripsFor(propArea, spawnKeepOut);
   const ctx = makeDressContext(scene, preset, propArea, feat);
   if (houses > 0) addVillage(scene, ctx);
+  if (ctx.lu && ctx.lu.townPlan) addTownSurfaces(scene, ctx);
   if (trees > 0) addVegetation(scene, ctx);
   if (rocks > 0) addRocks(scene, ctx, Math.round(rocks * (preset.rockFactor ?? 1)));
   if (fences > 0) addFences(scene, ctx);
@@ -585,7 +594,13 @@ export function warmEnvironment(renderer) {
 }
 
 export function updateEnvironment(renderer, dt = 0.016) {
-  if (cloudUniforms) cloudUniforms.uTime.value += dt;
+  if (cloudUniforms) {
+    cloudUniforms.uTime.value += dt;
+    // S-03: the shadows drift exactly as the deck does (its uWind . uTime)
+    const t = cloudUniforms.uTime.value;
+    const w = cloudUniforms.uWind.value;
+    setCloudShadowDrift(w.x * t, w.y * t);
+  }
   driftCirrus(skyCirrus, dt, wind.x, wind.z);
   envClock += dt;
   if (envFailed || !renderer || !sky || !activeScene) return;
@@ -960,13 +975,13 @@ function addClouds(scene, preset) {
       varying float vViewDepth;
       varying float vCamFar;
       ${HEIGHT_FOG_GLSL}
+      ${CLOUD_DECK_GLSL}
       // two octaves drifting at different rates, so the deck churns instead
-      // of sliding across the sky as one rigid sheet
+      // of sliding across the sky as one rigid sheet. ssDeckDensity
+      // (core/atmosphere.js) is the one field function: the S-03 cloud
+      // shadows read it too, with the same drift.
       float deckDensity( vec2 w ) {
-        vec2 uv = w / 2600.0 + uWind * uTime;
-        float a = texture2D( uMap, uv ).r;
-        float b = texture2D( uMap, uv * 2.17 + vec2( 0.31, 0.57 ) + uWind * uTime * 0.6 ).r;
-        return a * 0.65 + b * 0.35;
+        return ssDeckDensity( uMap, w, uWind * uTime );
       }
       void main() {
         // cover raises the water line: at 0.2 only the tallest tops show
@@ -3410,6 +3425,7 @@ export function updateScenery(dt = 0.016, camera = null) {
     }
   }
 
+  if (rain && camera) updateRain(camera);
   if (precip && camera) {
     precip.position.set(
       Math.round(camera.position.x), Math.round(camera.position.y), Math.round(camera.position.z),
@@ -4349,22 +4365,43 @@ function buildTreeMeshes(scene, ctx, buckets) {
     const crownMat = vegetationMaterial(0.86, true);
     const trunkMat = vegetationMaterial(0.95, true);
     owned.push(crownMat, trunkMat);
-    const crowns = new THREE.InstancedMesh(a.crownGeo, crownMat, n);
-    const trunks = new THREE.InstancedMesh(a.trunkGeo, trunkMat, n);
-    crowns.name = `trees:${a.key}:crown`;
-    trunks.name = `trees:${a.key}:trunk`;
-    crowns.castShadow = trunks.castShadow = true;
-    // the instances span the whole map, so the bounds never cull anything,
-    // and the sway shader moves vertices the bounds do not know about
-    crowns.frustumCulled = trunks.frustumCulled = false;
+    // perf (wave 5): one crown + one trunk InstancedMesh per map CHUNK, each
+    // with bounds over its own trees, so the colour pass drops the chunks
+    // behind the camera and the shadow pass every chunk outside the shadow
+    // box (it used to vertex-shade every tree on the map into the map).
+    const chunks = chunkIndices(items.length, (i) => items[i].x, (i) => items[i].z, ctx.dressHalf);
+    const pairOf = new Array(n);
+    const localOf = new Int32Array(n);
+    for (const list of chunks) {
+      const crowns = new THREE.InstancedMesh(a.crownGeo, crownMat, list.length);
+      const trunks = new THREE.InstancedMesh(a.trunkGeo, trunkMat, list.length);
+      crowns.name = `trees:${a.key}:crown`;
+      trunks.name = `trees:${a.key}:trunk`;
+      crowns.castShadow = trunks.castShadow = true;
+      // a standing, swaying or felled tree stays inside a sphere of its own
+      // height (plus crown spread) about its base
+      const bs = chunkSphere(list, (i) => items[i].x, (i) => items[i].z,
+        (i) => terrainHeight(items[i].x, items[i].z),
+        (i) => items[i].h * Math.max(1, a.crownRFactor * 2 * Math.max(items[i].ax, items[i].az)) * 1.15 + 2);
+      crowns.boundingSphere = bs;
+      trunks.boundingSphere = bs.clone();
+      const pair = { crowns, trunks };
+      for (let k = 0; k < list.length; k++) {
+        pairOf[list[k]] = pair;
+        localOf[list[k]] = k;
+      }
+      own(scene, trunks, crowns);
+    }
 
     // the species' own colour, carried through the snow the preset fell
     hexLinear(mixHex(Number.isFinite(a.crownHex) ? a.crownHex : ctx.preset.crown, SNOW_HEX, snow * 0.45), rgb);
     hexLinear(mixHex(Number.isFinite(a.trunkHex) ? a.trunkHex : ctx.preset.trunk, SNOW_HEX, snow * 0.15), trunkRgb);
     const scrub = a.role === 'scrub';
 
-    for (let i = 0; i < n; i++) {
-      const it = items[i];
+    for (let j = 0; j < n; j++) {
+      const it = items[j];
+      const { crowns, trunks } = pairOf[j];
+      const i = localOf[j];
       const ground = terrainHeight(it.x, it.z);
       // tubes and clumps are open at the bottom: start them a little underground
       const sink = 0.25 + it.h * 0.012 - it.yOff;
@@ -4406,12 +4443,60 @@ function buildTreeMeshes(scene, ctx, buckets) {
         slots: [slot(trunks), slot(crowns)],
       });
     }
-    crowns.instanceMatrix.needsUpdate = true;
-    trunks.instanceMatrix.needsUpdate = true;
-    if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
-    if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
-    own(scene, trunks, crowns);
+    for (const pair of new Set(pairOf)) {
+      for (const mesh of [pair.crowns, pair.trunks]) {
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      }
+    }
   }
+}
+
+// Map chunks for instanced vegetation: the instance indices grouped by a
+// coarse grid cell (about three cells across the dressed map, never under
+// 500 m), in their original order inside each cell. Coarse on purpose: a
+// chunk costs a draw call wherever it is seen, and the shadow box (~230 m)
+// and the forward half of the view are what culling has to win.
+// perf2 fix: only a dressed square at least VEG_CHUNK_MIN_SPAN across is
+// split. On the 900 m ground map the old 500 m cells met at the map centre,
+// right where the fighting (and so the shadow box) is, so culling won almost
+// nothing there while the object count tripled; it stays one mesh a species.
+const VEG_CHUNKS_ACROSS = 3;
+// Nor is a sparse species: under VEG_CHUNK_MIN_COUNT instances its vertex
+// work is too small to be worth the extra draw call per chunk in view.
+const VEG_CHUNK_MIN_SPAN = 1500;
+const VEG_CHUNK_MIN_COUNT = 400;
+function chunkIndices(n, xOf, zOf, half) {
+  const h0 = half || 1000;
+  if (h0 * 2 < VEG_CHUNK_MIN_SPAN || n < VEG_CHUNK_MIN_COUNT) {
+    return n ? [Array.from({ length: n }, (_, i) => i)] : [];
+  }
+  const cell = Math.max(500, (h0 * 2) / VEG_CHUNKS_ACROSS);
+  const cells = new Map();
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    // cells laid from the map's corner, so the dressed square splits evenly
+    const key = Math.floor((xOf(i) + h0) / cell) * 4096 + Math.floor((zOf(i) + h0) / cell);
+    let list = cells.get(key);
+    if (!list) {
+      list = [];
+      cells.set(key, list);
+      out.push(list);
+    }
+    list.push(i);
+  }
+  return out;
+}
+
+// A sphere holding every listed instance's own sphere (base point + reach).
+function chunkSphere(list, xOf, zOf, yOf, rOf) {
+  const box = new THREE.Box3();
+  const p = new THREE.Vector3();
+  for (const i of list) box.expandByPoint(p.set(xOf(i), yOf(i), zOf(i)));
+  const c = box.getCenter(new THREE.Vector3());
+  let r = 0;
+  for (const i of list) r = Math.max(r, p.set(xOf(i), yOf(i), zOf(i)).distanceTo(c) + rOf(i));
+  return new THREE.Sphere(c, r);
 }
 
 // --- hedges --------------------------------------------------------------------
@@ -4420,15 +4505,33 @@ function buildHedges(scene, ctx, hedge) {
   if (clumps.length) {
     const mat = vegetationMaterial(0.92, false);
     owned.push(mat);
-    const mesh = new THREE.InstancedMesh(hedgeClumpGeometry(), mat, clumps.length);
-    mesh.name = 'hedges';
-    mesh.castShadow = true;
-    mesh.frustumCulled = false;
+    // perf (wave 5): chunked like the trees (chunkIndices), so a clump is
+    // drawn and shadowed only where its chunk is in view
+    const clumpGeo = hedgeClumpGeometry();
+    const chunkList = chunkIndices(clumps.length, (i) => clumps[i].x, (i) => clumps[i].z, ctx.dressHalf);
+    const meshOf = new Array(clumps.length);
+    const localOf = new Int32Array(clumps.length);
+    const hedgeMeshes = [];
+    for (const list of chunkList) {
+      const m = new THREE.InstancedMesh(clumpGeo, mat, list.length);
+      m.name = 'hedges';
+      m.castShadow = true;
+      m.boundingSphere = chunkSphere(list, (i) => clumps[i].x, (i) => clumps[i].z, (i) => clumps[i].y,
+        (i) => Math.hypot(clumps[i].sx, clumps[i].sy, clumps[i].sz) + 2);
+      m.userData.mantle = Uint8Array.from(list, (ci) => (clumps[ci].mantle ? 1 : 0));
+      for (let k = 0; k < list.length; k++) {
+        meshOf[list[k]] = m;
+        localOf[list[k]] = k;
+      }
+      hedgeMeshes.push(m);
+    }
     // hawthorn and hazel run a touch lighter and yellower than the oaks
     const base = hexLinear(mixHex(ctx.preset.crown, SNOW_HEX, ctx.snow * 0.5));
     const mantleBase = hexLinear(mixHex(ctx.preset.crown, SNOW_HEX, ctx.snow * 0.4));
-    for (let i = 0; i < clumps.length; i++) {
-      const c = clumps[i];
+    for (let j = 0; j < clumps.length; j++) {
+      const c = clumps[j];
+      const mesh = meshOf[j];
+      const i = localOf[j];
       _q.setFromAxisAngle(_up, c.yaw);
       _v.set(c.x, c.y, c.z);
       _s.set(c.sx, c.sy, c.sz);
@@ -4440,11 +4543,12 @@ function buildHedges(scene, ctx, hedge) {
       const m = c.mantle ? [0.95, 1, 0.95] : [1.08, 1.1, 0.9];
       mesh.setColorAt(i, linColor(b[0] * m[0] * k, b[1] * m[1] * k, b[2] * m[2] * k));
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    // which instances are wood-mantle shrubs and which hedgerow brush, for
-    // anything (a test, a future AI cover map) that needs to tell them apart
-    mesh.userData.mantle = Uint8Array.from(clumps, (c) => (c.mantle ? 1 : 0));
+    // userData.mantle (per chunk, in local instance order) says which
+    // instances are wood-mantle shrubs and which hedgerow brush
+    for (const mesh of hedgeMeshes) {
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    }
 
     for (const g of hedge.groups) {
       let cx = 0; let cz = 0;
@@ -4460,7 +4564,7 @@ function buildHedges(scene, ctx, hedge) {
         reach = Math.max(reach, Math.hypot(c.x - cx, c.z - cz) + c.sx * 0.5);
         top = Math.max(top, c.y + c.sy - cy);
         slots.push({
-          mesh, index: ci, ox: c.x - cx, oy: c.y - cy, oz: c.z - cz,
+          mesh: meshOf[ci], index: localOf[ci], ox: c.x - cx, oy: c.y - cy, oz: c.z - cz,
           sx: c.sx, sy: c.sy, sz: c.sz, qx: c.q[0], qy: c.q[1], qz: c.q[2], qw: c.q[3],
         });
       }
@@ -4477,7 +4581,7 @@ function buildHedges(scene, ctx, hedge) {
         slots,
       });
     }
-    own(scene, mesh);
+    own(scene, ...hedgeMeshes);
   }
   if (hedge.runs.length) buildBanks(scene, ctx, hedge.runs);
 }
@@ -4655,7 +4759,9 @@ function addVillage(scene, ctx) {
     if (!cands.length) continue;
     // the archetypes that fit the plot; otherwise the smallest, shrunk to fit
     const fits = cands.filter((a) => a.w <= lot.w + 1.2 && a.d <= lot.d + 1.2);
-    const pool = fits.length ? fits : [cands.reduce((m, a) => (a.w * a.d < m.w * m.d ? a : m))];
+    // a lot that names its archetype (the town map's rows) gets exactly that
+    const named = lot.archetype ? cands.find((a) => a.key === lot.archetype) : null;
+    const pool = named ? [named] : fits.length ? fits : [cands.reduce((m, a) => (a.w * a.d < m.w * m.d ? a : m))];
     const arch = pool[Math.floor(ctx.rng() * pool.length) % pool.length];
     const scale = clamp(Math.min((lot.w + 1.2) / arch.w, (lot.d + 1.2) / arch.d), 0.7, 1);
     // tested after the draw above, so a map with no house in a spawn strip
@@ -4736,15 +4842,17 @@ function addVillage(scene, ctx) {
     }
     const w = arch.w * s;
     const d = arch.d * s;
-    registerProp({
+    // a yard wall (town map) comes down to a round or two
+    const hp = lot.role === 'wall' ? 150 : 520 + w * d * 6;
+    const prop = registerProp({
       kind: 'house',
       role: lot.role,
       archetype: arch.key,
       x: lot.x, z: lot.z, y: baseY,
       r: Math.min(MAX_PROP_R, Math.max(2, arch.solidR * s)),
       h: arch.h * s,
-      hp: 520 + w * d * 6,
-      maxHp: 520 + w * d * 6,
+      hp,
+      maxHp: hp,
       span: 0,
       solid: true,
       crushable: false,
@@ -4755,8 +4863,26 @@ function addVillage(scene, ctx) {
       // standing or ruined (see "Solid colliders"); null falls back to r / h
       coll: buildingCollider(arch, lot.x, lot.z, baseY, lot.yaw, s),
     });
+    // the town map's war damage: the house is already a shell when the battle
+    // opens — the fellProp end state, without its dust and with no fall
+    if (lot.ruined && canRuin) startRuined(prop, lot.yaw);
   }
   for (const part of PARTS) own(scene, meshes[part]);
+}
+
+function startRuined(prop, yaw) {
+  prop.fallAx = Math.cos(yaw);
+  prop.fallAz = -Math.sin(yaw);
+  prop.hp = 0;
+  prop.solid = false;
+  prop.state = 'down';
+  prop.fallT = prop.span;
+  if (prop.blocker) {
+    const bi = blockerList.indexOf(prop.blocker);
+    if (bi >= 0) blockerList.splice(bi, 1);
+    prop.blocker = null;
+  }
+  writeProp(prop, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -5313,7 +5439,22 @@ function addDistantWoods(scene, ctx) {
 // ---------------------------------------------------------------------------
 // Ground cover: groundcover.js builds and owns its mesh; this file creates it
 // after the props, ticks it from updateScenery and disposes it with the rest.
+// The town map's cobbled streets and square (world/town.js), one mesh.
+function addTownSurfaces(scene, ctx) {
+  try {
+    const { meshes, owned: geos } = buildTownSurfaces(ctx.lu.townPlan, { terrainHeight, quality: ctx.quality });
+    for (const g of geos) owned.push(g);
+    own(scene, ...meshes);
+  } catch (err) {
+    console.warn('[scenery] town streets unavailable:', err);
+  }
+}
+
 function addGroundCover(scene, ctx) {
+  // on the town map the grass reads the built-up disc as its village core, so
+  // it is not grown up through the streets and yards
+  const plan = ctx.lu && ctx.lu.townPlan;
+  const features = plan ? { ...ctx.feat, town: townDisc(plan) } : ctx.feat;
   try {
     groundCover = createGroundCover(scene, {
       preset: ctx.preset,
@@ -5322,7 +5463,7 @@ function addGroundCover(scene, ctx) {
       quality: ctx.quality,
       terrainHeight,
       roadDistanceAt,
-      features: ctx.feat,
+      features,
     });
   } catch (err) {
     console.warn('[scenery] ground cover unavailable:', err);
@@ -5333,7 +5474,224 @@ function addGroundCover(scene, ctx) {
 // ---------------------------------------------------------------------------
 // Weather. Falling snow is a single Points cloud whose motion lives entirely in
 // the vertex shader: it costs one draw call and no CPU work per frame.
+// ---------------------------------------------------------------------------
+// S-03 cloud shadows (core/atmosphere.js): the deck's own law, height and
+// opacity, the caster direction, the tier (backlog 4.3: low none, medium the
+// terrain only, high every lit material). Off without a deck, and under
+// ?calib, whose chip card must stand in full sun.
+function configureCloudShadow(preset) {
+  clearCloudShadow();
+  setCloudShadowDrift(0, 0);
+  if (!clouds || !cloudUniforms || !cloudTexture) return;
+  let calib = false;
+  try { calib = /[?&]calib/.test((globalThis.location && globalThis.location.search) || ''); } catch { calib = false; }
+  if (calib) return;
+  const q = qualityTier();
+  setCloudShadowField(cloudTexture);
+  setCloudShadow({
+    all: q === 'high' ? CLOUD_SHADOW_K : 0,
+    terrain: q === 'low' ? 0 : CLOUD_SHADOW_K,
+    waterLine: cloudUniforms.uWaterLine.value,
+    edge: cloudUniforms.uEdge.value,
+    deckY: clouds.userData.deckY || 900,
+    opacity: cloudUniforms.uOpacity.value,
+    sun: casterDir,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// W-01 rain: camera-local streaks (one LineSegments draw, 1 px lines, count
+// per tier 1,500 / 3,000 / 4,000), splash rings on the ground within 25 m
+// (one instanced draw, 60 / 120 / 200), and the rain bed (core/audio.js).
+// Streaks are world-fixed drops wrapped into a box around the camera, so the
+// camera moves through them; each is the distance a drop falls in 1/60 s
+// (7-9 m/s, slanted by the wind: ~0.13 m), alpha 0.2, lit by the light
+// block's ambient. They fade inside 3 m of the lens and at the box rim, and
+// stay out of the optics (fov at or under RAIN_OPTICS_FOV, 28 deg) and above the cloud deck.
+export const RAIN_STREAKS = Object.freeze({ low: 1500, medium: 3000, high: 4000 });
+export const RAIN_SPLASHES = Object.freeze({ low: 60, medium: 120, high: 200 });
+const RAIN_HALF = 20;          // m, half the box across
+const RAIN_DOWN = 10;          // m of the box below the camera
+const RAIN_TALL = 30;          // m, box height
+const RAIN_ALPHA = 0.2;
+const SPLASH_R = 25;           // m around the camera
+const SPLASH_LIFE = 0.45;      // s
+export const RAIN_OPTICS_FOV = 28; // deg: streaks and rings fully hidden at or below
+let rain = null;              // { lines, rings, u, ringAttr, cycle, phase, level, n, nRings }
+
+function addRain(scene, preset) {
+  const level = preset.wet && Number.isFinite(preset.wet.rain) ? preset.wet.rain : 1;
+  if (!(level > 0)) return;
+  const q = qualityTier();
+  const n = Math.max(1, Math.round(RAIN_STREAKS[q] * level));
+  const L = preset.light;
+  const amb = L && L.ambLin ? L.ambLin : [0.1, 0.11, 0.12];
+  const u = {
+    uRainTime: windUniforms.time,
+    uRainCam: { value: new THREE.Vector3() },
+    uRainWind: { value: new THREE.Vector2() },
+    uRainVis: { value: 1 },
+  };
+  // the wind slants the fall: 60 % of the surface wind, capped
+  const ws = Math.min(6, (preset.windStrength ?? 3) * 0.6);
+  u.uRainWind.value.set(wind.x * ws, wind.z * ws);
+  const pos = new Float32Array(n * 6);
+  const aRain = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const x = rand(-RAIN_HALF, RAIN_HALF);
+    const y = rand(0, RAIN_TALL);
+    const z = rand(-RAIN_HALF, RAIN_HALF);
+    const v = rand(7, 9);
+    for (let e = 0; e < 2; e++) {
+      pos[i * 6 + e * 3] = x; pos[i * 6 + e * 3 + 1] = y; pos[i * 6 + e * 3 + 2] = z;
+      aRain[i * 4 + e * 2] = e;
+      aRain[i * 4 + e * 2 + 1] = v;
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aRain', new THREE.BufferAttribute(aRain, 2));
+  const mat = new THREE.LineBasicMaterial({ transparent: true, opacity: RAIN_ALPHA, depthWrite: false, fog: true });
+  // drops refract the dome: a little brighter than the ambient a grey
+  // surface reflects (LINEAR working space, never through a canvas colour)
+  mat.color.setRGB(amb[0] * 2.4, amb[1] * 2.4, amb[2] * 2.4, THREE.LinearSRGBColorSpace);
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = `uniform float uRainTime;\nuniform vec3 uRainCam;\nuniform vec2 uRainWind;\nuniform float uRainVis;\nattribute vec2 aRain;\nvarying float vRainA;\n${sh.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      `vec3 rv = vec3( uRainWind.x, - aRain.y, uRainWind.y );
+      vec3 wp = position + rv * uRainTime - uRainCam;
+      wp.x = mod( wp.x + ${RAIN_HALF.toFixed(1)}, ${(2 * RAIN_HALF).toFixed(1)} ) - ${RAIN_HALF.toFixed(1)};
+      wp.z = mod( wp.z + ${RAIN_HALF.toFixed(1)}, ${(2 * RAIN_HALF).toFixed(1)} ) - ${RAIN_HALF.toFixed(1)};
+      wp.y = mod( wp.y + ${RAIN_DOWN.toFixed(1)}, ${RAIN_TALL.toFixed(1)} ) - ${RAIN_DOWN.toFixed(1)};
+      vec3 transformed = wp - rv * ( aRain.x / 60.0 );
+      float rd = length( wp );
+      vRainA = uRainVis * smoothstep( 1.5, 3.0, rd )
+        * ( 1.0 - smoothstep( ${(0.7 * RAIN_HALF).toFixed(1)}, ${RAIN_HALF.toFixed(1)}, length( wp.xz ) ) );`,
+    );
+    sh.fragmentShader = `varying float vRainA;\n${sh.fragmentShader}`.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      diffuseColor.a *= vRainA;
+      if ( diffuseColor.a < 0.002 ) discard;`,
+    );
+  };
+  mat.customProgramCacheKey = () => 'steelskies-rain-streaks';
+  owned.push(geo, mat);
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.frustumCulled = false;
+  lines.renderOrder = 2;
+  own(scene, lines);
+
+  // splash rings
+  const nRings = Math.max(1, Math.round(RAIN_SPLASHES[q] * level));
+  const quad = new THREE.PlaneGeometry(1, 1);
+  const rgeo = new THREE.InstancedBufferGeometry();
+  rgeo.index = quad.index;
+  rgeo.setAttribute('position', quad.getAttribute('position'));
+  rgeo.setAttribute('uv', quad.getAttribute('uv'));
+  const ringData = new Float32Array(nRings * 4);
+  for (let i = 0; i < nRings; i++) ringData[i * 4 + 1] = -1e5;   // parked until spawned
+  const ringAttr = new THREE.InstancedBufferAttribute(ringData, 4);
+  ringAttr.setUsage(THREE.DynamicDrawUsage);
+  rgeo.setAttribute('aSplash', ringAttr);
+  rgeo.instanceCount = nRings;
+  const rmat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, fog: true, opacity: 0.35 });
+  rmat.color.setRGB(amb[0] * 2.8, amb[1] * 2.8, amb[2] * 2.8, THREE.LinearSRGBColorSpace);
+  rmat.polygonOffset = true;
+  rmat.polygonOffsetFactor = -2;
+  rmat.polygonOffsetUnits = -2;
+  rmat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = `uniform float uRainTime;\nuniform float uRainVis;\nattribute vec4 aSplash;\nvarying vec3 vSpl;\n${sh.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      `float sAge = clamp( ( uRainTime - aSplash.w ) / ${SPLASH_LIFE.toFixed(3)}, 0.0, 1.0 );
+      float sR = mix( 0.03, 0.16, sqrt( sAge ) );
+      vec3 transformed = vec3( position.x * 2.0 * sR, 0.025, position.y * 2.0 * sR ) + aSplash.xyz;
+      vSpl = vec3( position.xy * 2.0, ( 1.0 - sAge ) * uRainVis );`,
+    );
+    sh.fragmentShader = `varying vec3 vSpl;\n${sh.fragmentShader}`.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      float sRr = length( vSpl.xy );
+      diffuseColor.a *= smoothstep( 0.55, 0.82, sRr ) * ( 1.0 - smoothstep( 0.82, 1.0, sRr ) ) * vSpl.z;
+      if ( diffuseColor.a < 0.002 ) discard;`,
+    );
+  };
+  rmat.customProgramCacheKey = () => 'steelskies-rain-rings';
+  owned.push(rgeo, quad, rmat);
+  const rings = new THREE.Mesh(rgeo, rmat);
+  rings.frustumCulled = false;
+  rings.renderOrder = 2;
+  own(scene, rings);
+
+  const phase = new Float32Array(nRings);
+  const cycle = new Int32Array(nRings).fill(-1);
+  for (let i = 0; i < nRings; i++) phase[i] = Math.random() * SPLASH_LIFE;
+  rain = { lines, rings, u, ringAttr, cycle, phase, level, n, nRings, deckY: (clouds && clouds.userData.deckY) || 900 };
+  rainBed(level);
+}
+
+// per frame: follow the camera, hide in the optics and above the deck,
+// respawn the rings whose life ran out, drive the rain bed
+function updateRain(camera) {
+  const r = rain;
+  if (!r || !camera || !camera.position) return;
+  const cp = camera.position;
+  r.u.uRainCam.value.copy(cp);
+  r.lines.position.copy(cp);
+  const fov = camera.isPerspectiveCamera ? camera.fov : 60;
+  const above = smooth01((cp.y - (r.deckY - 120)) / 120);
+  // gone at and below RAIN_OPTICS_FOV (the widest gunner's sight step is
+  // TZF 9b's 25 deg field: ~27.7 deg camera fov; the aircraft aim zoom is 22),
+  // full from +6 deg; the third-person views sit at 60
+  const optics = smooth01((fov - RAIN_OPTICS_FOV) / 6);
+  r.u.uRainVis.value = (1 - above) * optics;
+  rainBed(r.level * (1 - above));
+  const t = windUniforms.time.value;
+  const ground = groundHeightAt(cp.x, cp.z);
+  const nearGround = cp.y - ground < 40 && r.u.uRainVis.value > 0;
+  if (!nearGround) return;
+  const a = r.ringAttr.array;
+  let dirty = false;
+  for (let i = 0; i < r.nRings; i++) {
+    const c = Math.floor((t + r.phase[i]) / SPLASH_LIFE);
+    if (c === r.cycle[i]) continue;
+    r.cycle[i] = c;
+    const rr = SPLASH_R * Math.sqrt(Math.random());
+    const th = Math.random() * TAU;
+    const x = cp.x + rr * Math.cos(th);
+    const z = cp.z + rr * Math.sin(th);
+    a[i * 4] = x;
+    a[i * 4 + 1] = groundHeightAt(x, z);
+    a[i * 4 + 2] = z;
+    a[i * 4 + 3] = c * SPLASH_LIFE - r.phase[i];
+    dirty = true;
+  }
+  if (dirty) r.ringAttr.needsUpdate = true;
+}
+
+function smooth01(x) {
+  const t = x < 0 ? 0 : x > 1 ? 1 : x;
+  return t * t * (3 - 2 * t);
+}
+
+// the rain this battle shows, for tests and the bench
+export function rainState() {
+  if (!rain) return null;
+  return {
+    streaks: rain.n, splashes: rain.nRings, level: rain.level, visible: rain.u.uRainVis.value,
+    wind: [rain.u.uRainWind.value.x, rain.u.uRainWind.value.y],
+    color: rain.lines.material.color.toArray(), alpha: RAIN_ALPHA,
+    lines: rain.lines, rings: rain.rings,
+  };
+}
+
 function addWeather(scene, preset) {
+  if (preset.precip === 'rain') {
+    addRain(scene, preset);
+    return;
+  }
   if (preset.precip !== 'snow') return;
   const n = 900;
   const pos = new Float32Array(n * 3);
@@ -5495,6 +5853,9 @@ export function disposeScenery() {
   sky = null; skyUniforms = null;
   clouds = null; cloudUniforms = null;
   setActiveCloudVolume(null);
+  // S-03 / W-01: no cloud shadow, rain or rain bed outlives its battle
+  clearCloudShadow();
+  if (rain) { rain = null; rainBed(0); }
   sunLight = null; hemiLight = null;
   envDirty = false; envFailed = false;
   exposure = 0;

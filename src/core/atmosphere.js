@@ -296,6 +296,183 @@ const SHADOW_RETURN_FADED = `float ssEdge = max( abs( shadowCoord.x - 0.5 ), abs
 		shadow = mix( shadow, 1.0, smoothstep( ${SHADOW_EDGE_FADE.toFixed(2)}, 1.0, ssEdge ) );
 		${SHADOW_RETURN}`;
 
+// 5. CLOUD SHADOWS ON THE GROUND (S-03).
+//    The sun is dimmed where the S-01 / S-02 cloud field stands between it
+//    and the fragment: the fragment's world position (vFogWorld, the height
+//    fog's own varying, so no new varying) is carried up the caster direction
+//    to the deck height and the deck's density is read there with the deck's
+//    own law (ssDeckDensity is THE field function; the deck shader in
+//    world/scenery.js calls it too, so the shadows drift with the clouds and
+//    cover what they cover). Transmittance T = 1 - k . opacity . m, with m the
+//    deck's alpha mask (smoothstep(waterLine, waterLine + edge, d)); it fades
+//    out over the last 150 m below the deck so nothing above it is shaded.
+//    Applied to directional light 0 (the battle sun) in <lights_fragment_begin>.
+//
+//    Uniforms ride on ShaderLib (lambert / phong / standard / physical / toon),
+//    whose uniform objects every built-in material CLONES at compile time.
+//    cloneUniforms copies a value only when it is a three Vector / Color /
+//    Texture; the values here are plain {x, y, z, w} objects and an
+//    un-flagged view of the field texture, so every program shares them by
+//    reference and one write per frame reaches every material. Tiers
+//    (backlog 4.3): ssCloudA.x for every lit material (high), ssCloudA.y for
+//    the terrain only (medium: terrain.js defines SS_CLOUD_TERRAIN), low 0.
+//      ssCloudA  x k all, y k terrain, z water line, w edge
+//      ssCloudB  xy field drift (uv units, = the deck's uWind . uTime), z deck y, w deck opacity
+//      ssCloudC  xy caster xz / caster y (the projection), zw unused
+export const CLOUD_SHADOW_K = 0.85;      // transmittance under a full cloud: 0.15
+export const CLOUD_SHADOW_FADE = 150;    // m below the deck where the shadow fades out
+export const CLOUD_DECK_PERIOD = 2600;   // m: the field tile (world/clouds.js CLOUD_FIELD_PERIOD)
+export const CLOUD_DECK_GLSL = /* glsl */`
+	float ssDeckDensity( sampler2D map, vec2 w, vec2 drift ) {
+		vec2 uv = w / ${CLOUD_DECK_PERIOD.toFixed(1)} + drift;
+		float a = texture2D( map, uv ).r;
+		float b = texture2D( map, uv * 2.17 + vec2( 0.31, 0.57 ) + drift * 0.6 ).r;
+		return a * 0.65 + b * 0.35;
+	}
+`;
+const CLOUD_SHADOW_PARS = /* glsl */`
+#if defined( USE_FOG ) && defined( SS_FOG_PARS ) && ! defined( SS_CLOUD_PARS )
+	#define SS_CLOUD_PARS
+	uniform sampler2D ssCloudMap;
+	uniform vec4 ssCloudA;
+	uniform vec4 ssCloudB;
+	uniform vec4 ssCloudC;
+	#ifndef SS_DECK_DENSITY
+	#define SS_DECK_DENSITY
+${CLOUD_DECK_GLSL}
+	#endif
+	float ssCloudShadow( vec3 p, float k ) {
+		if ( k <= 0.0 ) return 1.0;
+		float up = ssCloudB.z - p.y;
+		if ( up <= 0.0 ) return 1.0;
+		float d = ssDeckDensity( ssCloudMap, p.xz + ssCloudC.xy * up, ssCloudB.xy );
+		float m = smoothstep( ssCloudA.z, ssCloudA.z + ssCloudA.w, d );
+		return 1.0 - k * ssCloudB.w * m * smoothstep( 0.0, ${CLOUD_SHADOW_FADE.toFixed(1)}, up );
+	}
+#endif
+`;
+const LIGHT_DIR_INFO = 'getDirectionalLightInfo( directionalLight, directLight );';
+const LIGHT_DIR_INFO_CLOUD = `${LIGHT_DIR_INFO}
+		#if defined( SS_CLOUD_PARS ) && ( UNROLLED_LOOP_INDEX == 0 )
+		#ifdef SS_CLOUD_TERRAIN
+		directLight.color *= ssCloudShadow( vFogWorld.xyz, max( ssCloudA.x, ssCloudA.y ) );
+		#else
+		directLight.color *= ssCloudShadow( vFogWorld.xyz, ssCloudA.x );
+		#endif
+		#endif`;
+
+// the shared values (see above); plain objects on purpose
+const cloudA = { x: 0, y: 0, z: 1, w: 0.28 };
+const cloudB = { x: 0, y: 0, z: 900, w: 0.85 };
+const cloudC = { x: 0, y: 0, z: 0, w: 0 };
+let cloudWrap = null;
+const cloudState = { field: null };
+export const cloudShadowUniforms = {
+  ssCloudMap: { value: null },
+  ssCloudA: { value: cloudA },
+  ssCloudB: { value: cloudB },
+  ssCloudC: { value: cloudC },
+};
+// An un-flagged view of a texture (isTexture false), so cloneUniforms keeps
+// the reference. The renderer reads every other field through the prototype.
+// Own pieces, so it is a texture of its own to the renderer and not a shadow
+// of the original's bookkeeping:
+//  * _listeners: the renderer's 'dispose' listener binds to the view itself,
+//    so the original's dispose no longer reaches it and the view's own
+//    dispose (disposeCloudShadowField) releases the view's GPU slot;
+//  * version: the original's live version plus a bias, so needsUpdate on the
+//    original re-uploads the view as well, and re-pointing the view at a new
+//    field always moves its version forward (never back to a stale number).
+function wrapTexture(tex) {
+  const w = Object.create(tex);
+  let bias = 0;
+  Object.defineProperty(w, 'isTexture', { value: false, writable: true });
+  Object.defineProperty(w, '_listeners', { value: {}, writable: true });
+  Object.defineProperty(w, 'version', {
+    configurable: true,
+    get() { return Object.getPrototypeOf(this).version + bias; },
+    set(v) { bias += v - (Object.getPrototypeOf(this).version + bias); },
+  });
+  Object.defineProperty(w, 'repoint', {
+    value(next) {
+      const before = Object.getPrototypeOf(this).version + bias;
+      Object.setPrototypeOf(this, next);
+      bias = 0;
+      if (next.version <= before) bias = before + 1 - next.version;
+    },
+  });
+  return w;
+}
+// The field the deck draws (world/scenery.js makeCloudTexture). Swapping the
+// field later re-points the view and forces an upload.
+export function setCloudShadowField(tex) {
+  if (!tex || !tex.isTexture) return false;
+  cloudState.field = tex;
+  if (!cloudWrap) {
+    cloudWrap = wrapTexture(tex);
+  } else if (Object.getPrototypeOf(cloudWrap) !== tex) {
+    cloudWrap.repoint(tex);
+  }
+  cloudShadowUniforms.ssCloudMap.value = cloudWrap;
+  return true;
+}
+// Releases the view's GPU texture (the renderer's dispose listener on the
+// view). Only for a session teardown that also drops the field: the deck's
+// field is generated once per session, so battles keep the view.
+export function disposeCloudShadowField() {
+  clearCloudShadow();
+  if (cloudWrap) {
+    try { cloudWrap.dispatchEvent({ type: 'dispose' }); } catch { /* no renderer yet */ }
+  }
+  cloudWrap = null;
+  cloudState.field = null;
+  cloudShadowUniforms.ssCloudMap.value = null;
+}
+// Per battle: strengths per tier, the deck's law, height and opacity, the
+// caster direction. Anything left out keeps its value.
+export function setCloudShadow(o = {}) {
+  if (Number.isFinite(o.all)) cloudA.x = Math.max(0, o.all);
+  if (Number.isFinite(o.terrain)) cloudA.y = Math.max(0, o.terrain);
+  if (Number.isFinite(o.waterLine)) cloudA.z = o.waterLine;
+  if (Number.isFinite(o.edge)) cloudA.w = Math.max(1e-3, o.edge);
+  if (Number.isFinite(o.deckY)) cloudB.z = o.deckY;
+  if (Number.isFinite(o.opacity)) cloudB.w = o.opacity;
+  if (o.sun) {
+    const sy = Math.max(0.05, o.sun.y);
+    cloudC.x = o.sun.x / sy;
+    cloudC.y = o.sun.z / sy;
+  }
+  return cloudShadowState();
+}
+// the field drift in uv units (the deck's uWind . uTime), every frame
+export function setCloudShadowDrift(dx, dz) {
+  cloudB.x = Number.isFinite(dx) ? dx : 0;
+  cloudB.y = Number.isFinite(dz) ? dz : 0;
+}
+export function clearCloudShadow() {
+  cloudA.x = 0;
+  cloudA.y = 0;
+}
+export function cloudShadowState() {
+  return {
+    all: cloudA.x, terrain: cloudA.y, waterLine: cloudA.z, edge: cloudA.w,
+    driftX: cloudB.x, driftZ: cloudB.y, deckY: cloudB.z, opacity: cloudB.w,
+    projX: cloudC.x, projZ: cloudC.y, field: cloudState.field,
+    shared: !!cloudWrap && cloudShadowUniforms.ssCloudMap.value === cloudWrap,
+  };
+}
+// The JS twin of ssCloudShadow, given a density function d(x, z, driftX,
+// driftZ) (world/clouds.js deckDensityAt). k = the strength the material sees.
+export function cloudShadowJS(density, x, y, z, k = cloudA.x) {
+  if (!(k > 0)) return 1;
+  const up = cloudB.z - y;
+  if (up <= 0) return 1;
+  const d = density(x + cloudC.x * up, z + cloudC.y * up, cloudB.x, cloudB.y);
+  const m = smooth(cloudA.z, cloudA.z + cloudA.w, d);
+  return 1 - k * cloudB.w * m * smooth(0, CLOUD_SHADOW_FADE, up);
+}
+const SHADOW_LIBS = ['lambert', 'phong', 'standard', 'physical', 'toon'];
+
 let installed = false;
 
 export function installAtmosphere() {
@@ -318,6 +495,30 @@ export function installAtmosphere() {
   const at = typeof sm === 'string' ? sm.indexOf(SHADOW_RETURN) : -1;
   const pt = typeof sm === 'string' ? sm.indexOf('getPointShadow') : -1;
   if (at >= 0 && (pt < 0 || at < pt)) C.shadowmap_pars_fragment = sm.replace(SHADOW_RETURN, SHADOW_RETURN_FADED);
+  // S-03: the uniforms on every lit built-in shader, then the chunks. Only
+  // over the r170 text (a three upgrade without the anchor keeps no shadows
+  // rather than a broken shader).
+  const lib = THREE.ShaderLib;
+  let libsOk = !!lib;
+  if (lib) {
+    if (!cloudWrap) {
+      // a 1 x 1 stand-in until the deck's field arrives (setCloudShadowField)
+      const ph = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+      ph.needsUpdate = true;
+      ph.userData = { shared: true };   // markShared (core/materials.js) without the import
+      cloudWrap = wrapTexture(ph);
+      cloudShadowUniforms.ssCloudMap.value = cloudWrap;
+    }
+    for (const k of SHADOW_LIBS) {
+      if (lib[k] && lib[k].uniforms) Object.assign(lib[k].uniforms, cloudShadowUniforms);
+      else if (k !== 'standard') libsOk = false;
+    }
+  }
+  if (libsOk && typeof C.lights_pars_begin === 'string' && typeof C.lights_fragment_begin === 'string'
+    && C.lights_fragment_begin.includes(LIGHT_DIR_INFO)) {
+    C.lights_pars_begin = `${C.lights_pars_begin}\n${CLOUD_SHADOW_PARS}`;
+    C.lights_fragment_begin = C.lights_fragment_begin.replace(LIGHT_DIR_INFO, LIGHT_DIR_INFO_CLOUD);
+  }
   installed = true;
   return true;
 }

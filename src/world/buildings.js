@@ -1631,6 +1631,48 @@ const STYLES = {
         chimneys: [{ x: -2.61, z: 0, sx: 0.8, sz: 0.9 }],
       },
       { key: 'normandy_church', role: 'church', church: true },
+      // ---- the town set (wave 5, world/town.js TOWN_ARCH): appended after the
+      // church so every older archetype keeps its index and its seed. Row
+      // houses on a party-wall plan — no openings on the side walls — eaves
+      // to the street, three storeys on the market streets.
+      {
+        key: 'normandy_townhouse', role: 'townhouse', w: 9, d: 8.5, eave: 8.4, pitch: 45,
+        ops: {
+          front: [door(-2.7, 0.12, 1.05, 2.3), win(0.2, 0.95, 1.0, 1.5), win(2.9, 0.95, 1.0, 1.5),
+            win(-2.9, 3.5, 0.95, 1.45), win(0, 3.5, 0.95, 1.45), win(2.9, 3.5, 0.95, 1.45),
+            win(-2.9, 6.15, 0.9, 1.3), win(0, 6.15, 0.9, 1.3), win(2.9, 6.15, 0.9, 1.3)],
+          back: [win(-2.4, 1.0, 0.9, 1.3), door(2.0, 0.12, 1.0, 2.15), win(-2.4, 3.6, 0.9, 1.3),
+            win(2.4, 3.6, 0.9, 1.3), win(0, 6.2, 0.85, 1.2, NS)],
+        },
+        chimneys: [{ x: -4.11, z: 0.6, sx: 0.9, sz: 1.1 }, { x: 4.11, z: -0.6, sx: 0.9, sz: 1.1 }],
+      },
+      {
+        // gable to the street, the older narrow plot
+        key: 'normandy_townhouse_narrow', role: 'townhouse', w: 7, d: 9.5, eave: 6.0,
+        ops: {
+          front: [door(-1.7, 0.12, 1.0, 2.25), win(1.4, 0.95, 1.05, 1.5),
+            win(-1.5, 3.45, 0.95, 1.45), win(1.5, 3.45, 0.95, 1.45)],
+          back: [win(-1.4, 1.0, 0.85, 1.2), win(1.4, 3.5, 0.85, 1.2)],
+        },
+        gableOps: { front: win(0, 6.7, 0.75, 0.95), back: win(0, 6.7, 0.6, 0.8, NS) },
+        chimneys: [{ x: 0, z: -2.6, sx: 0.8, sz: 0.9 }],
+      },
+      {
+        // a shop on the ground floor: two wide display windows either side of
+        // the door, the flat above
+        key: 'normandy_shop', role: 'townhouse', w: 11, d: 9, eave: 6.3, pitch: 48,
+        ops: {
+          front: [win(-3.5, 0.55, 2.4, 2.0, NS), door(0, 0.12, 1.3, 2.5), win(3.5, 0.55, 2.4, 2.0, NS),
+            win(-3.8, 3.6, 1.0, 1.4), win(-1.3, 3.6, 1.0, 1.4), win(1.3, 3.6, 1.0, 1.4), win(3.8, 3.6, 1.0, 1.4)],
+          back: [door(-3.2, 0.12, 1.0, 2.1), win(0.5, 1.0, 0.9, 1.2), win(3.4, 1.0, 0.9, 1.2),
+            win(-2, 3.7, 0.9, 1.2), win(2, 3.7, 0.9, 1.2)],
+        },
+        chimneys: [{ x: -5.11, z: 0, sx: 0.9, sz: 1.2 }, { x: 5.11, z: 0, sx: 0.9, sz: 1.2 }],
+      },
+      // yard walls: rubble limestone under a dressed coping, 1.8 m — a hull
+      // stops at one, a round knocks it down (scenery gives walls little hp)
+      { key: 'normandy_wall', role: 'wall', wall: true, w: 12, d: 0.6, h: 1.8 },
+      { key: 'normandy_wall_short', role: 'wall', wall: true, w: 6, d: 0.6, h: 1.8 },
     ],
   },
 
@@ -2755,7 +2797,55 @@ function styleSeed(name) {
   return (h >>> 0) % 100000;
 }
 
+// A free-standing yard wall (town map): stone body from -0.6 m (footing) to
+// A.h, a coping slab in the trim atlas' dressed-stone cell.
+function gardenWall(S, A) {
+  const gw = new Geo();
+  const gr = new Geo();
+  const gt = new Geo();
+  const hx = A.w / 2;
+  const hz = A.d / 2;
+  const h = A.h;
+  const col = (p) => 0.6 + 0.4 * smooth(-0.6, 1.2, p[1]);
+  box(gw, -hx, hx, -0.6, h, -hz, hz, 'px nx pz nz', null, col);
+  box(gt, -hx - 0.04, hx + 0.04, h, h + 0.14, -hz - 0.06, hz + 0.06, 'px nx pz nz py ny', C.STONE, 0.9);
+  return { gw, gr, gt, top: h + 0.14, pitch: 0, alongX: true };
+}
+
+// ...and what a shell leaves of it: broken stumps along the line.
+function gardenWallRuin(A, seed) {
+  const g = new Geo();
+  const hx = A.w / 2;
+  const hz = A.d / 2;
+  const n = Math.max(3, Math.round(A.w / 1.3));
+  const col = (p) => 0.55 + 0.35 * smooth(-0.6, 1.0, p[1]);
+  for (let i = 0; i < n; i++) {
+    const x0 = -hx + (A.w * i) / n;
+    const x1 = -hx + (A.w * (i + 1)) / n;
+    const r = ih(i, 7, seed);
+    const top = r < 0.3 ? 0.15 + r : 0.35 + r * 0.9;
+    box(g, x0, x1, -0.6, top, -hz, hz, 'px nx pz nz py', null, col);
+  }
+  return g;
+}
+
 function buildArchetype(S, st, A, q, seed) {
+  if (A.wall) {
+    const b = gardenWall(S, A);
+    const rects = [{ cx: 0, cz: 0, w: A.w, d: A.d + 0.6, e: A.h * 0.5, pitch: 0, gable: false, alongX: true, heap: 0.45 }];
+    const parts = { walls: b.gw.toGeometry(), roof: b.gr.toGeometry(), trim: b.gt.toGeometry() };
+    const ruin = { walls: gardenWallRuin(A, seed).toGeometry(), rubble: rubbleHeap(S, rects, seed + 5, q).toGeometry() };
+    const tri = (g) => g.index.count / 3;
+    const tris = {
+      walls: tri(parts.walls), roof: tri(parts.roof), trim: tri(parts.trim),
+      ruinWalls: tri(ruin.walls), rubble: tri(ruin.rubble),
+    };
+    tris.total = tris.walls + tris.roof + tris.trim;
+    return {
+      key: A.key, role: A.role, w: A.w, d: A.d, h: b.top, solidR: 0.5 * A.w, parts, ruin,
+      style: st, eave: A.h, pitch: 0, ridgeAxis: null, overhang: { eave: 0, verge: 0 }, tris,
+    };
+  }
   let b;
   let w;
   let d;

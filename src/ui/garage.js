@@ -10,6 +10,7 @@ import {
 } from '../game/mods.js';
 import { brOf, brLabel, brBracket, vehicleKind } from '../game/battleRating.js';
 import { vehicleThumb } from './thumbs.js';
+import { GROUND_MAPS, MAP_CHIP, getMapChoice, setMapChoice } from '../game/maps.js';
 import { HangarInspector, inspectorShellCatalogue } from './xray.js';
 import { input, ACTIONS, GROUPS, keyLabel } from '../core/input.js';
 
@@ -70,9 +71,11 @@ const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
 
-const MODE_LABEL = { ground: 'Ground', air: 'Air', combined: 'Combined Arms' };
-const MODE_CHIP = { ground: 'GROUND ASSAULT', air: 'DOGFIGHT', combined: 'COMBINED ARMS' };
-const MODE_ORDER = ['ground', 'air', 'combined'];
+const MODE_LABEL = { ground: 'Ground', air: 'Air', combined: 'Combined Arms', convoy: 'Convoy' };
+const MODE_CHIP = { ground: 'GROUND ASSAULT', air: 'DOGFIGHT', combined: 'COMBINED ARMS', convoy: 'CONVOY' };
+const MODE_ORDER = ['ground', 'air', 'combined', 'convoy'];
+// the modes fought on the ground maps, which take the MAP chips (game/maps.js)
+const MAP_MODES = ['ground', 'convoy'];
 const DIFF_LABEL = { arcade: 'Arcade', realistic: 'Realistic' };
 
 const SCREEN_TITLE = {
@@ -185,7 +188,7 @@ export class Garage {
   // ---------------------------------------------------------------------------
 
   allowedTabs() {
-    if (this.battleMode === 'ground') return ['ground'];
+    if (this.battleMode === 'ground' || this.battleMode === 'convoy') return ['ground'];
     if (this.battleMode === 'air') return ['air'];
     return ['ground', 'air'];
   }
@@ -763,6 +766,9 @@ export class Garage {
       <div class="gxBattleLine"><b>${MODE_LABEL[this.battleMode]} ${DIFF_LABEL[diff]}</b></div>
       <div class="gxHint">Matchmaking bracket BR ${bracket.label}${this.respawnLock ? ' · locked for this battle' : ''}</div>
       <div class="gxChips">${modeChips}</div>
+      ${MAP_MODES.includes(this.battleMode) ? `<div class="gxChips">${GROUND_MAPS
+    .map((m) => `<button class="bmChip mapChip" data-map="${m}"${this.respawnLock ? ' disabled' : ''}>${MAP_CHIP[m]}</button>`)
+    .join('')}</div>` : ''}
       <div class="gxChips">${diffChips}</div>`,
     { act: this.respawnLock ? null : 'cyclemode', title: 'Click to cycle the battle mode' }));
 
@@ -1434,6 +1440,12 @@ export class Garage {
       this.setBattleMode(el.dataset.bm);
       return;
     }
+    if ((el = t.closest('[data-map]'))) {
+      if (this.respawnLock) return;
+      setMapChoice(el.dataset.map);
+      this.render();
+      return;
+    }
     if ((el = t.closest('[data-modetab]'))) {
       if (!this.allowedTabs().includes(el.dataset.modetab)) return;
       this.mode = el.dataset.modetab;
@@ -1635,6 +1647,10 @@ export class Garage {
     });
     this.root.querySelectorAll('[data-bm]').forEach((chip) => {
       chip.classList.toggle('active', chip.dataset.bm === this.battleMode);
+    });
+    const mapNow = getMapChoice();
+    this.root.querySelectorAll('[data-map]').forEach((chip) => {
+      chip.classList.toggle('active', chip.dataset.map === mapNow);
     });
     this.root.querySelectorAll('[data-screen]').forEach((btn) => {
       const s = btn.dataset.screen;

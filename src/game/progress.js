@@ -510,6 +510,11 @@ export const progress = {
     if (!s.price) return true;
     const req = this.prerequisiteFor(s);
     if (!req) return true;
+    // Research already under way stays under way: the tree is derived, so a
+    // new vehicle can slot in below one a save had started on (the M4A3(76)W
+    // under the Pershing) — the RP put in is kept, and so is the right to
+    // finish it.
+    if (this.researchInvested(s) > 0 || this.data.research.target === s.id) return true;
     if (req.kind === 'vehicle') return this.isOwned(req.spec.id);
     for (const owned of this.ownedSpecs(req.vehicleKind)) {
       if (owned.tier >= req.tier) return true;
@@ -937,6 +942,11 @@ export const progress = {
     }
     if (hits) add(`Penetrating hits ×${hits}`, S.hit * hits, R.hit * hits);
     if (caps) add(`Point captures ×${caps}`, S.cap * caps, R.cap * caps);
+    // CONVOY (game/convoy.js): a lorry brought through pays as a capture does
+    const convoyTrucks = count(result.convoyTrucks);
+    if (convoyTrucks) {
+      add(`Convoy lorries delivered ×${convoyTrucks}`, S.cap * convoyTrucks, R.cap * convoyTrucks);
+    }
     if (scouts) add(`Scout reports ×${scouts}`, S.scout * scouts, R.scout * scouts);
     if (capTicks) add(`Zone control ×${capTicks}`, S.capTick * capTicks, R.capTick * capTicks);
     if (fires) add(`Fires extinguished ×${fires}`, S.fire * fires, R.fire * fires);

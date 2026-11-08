@@ -176,9 +176,12 @@ export function buildInternals(spec) {
   // and the full-height boxes stood 0.10-0.15 m out through it (the Stuart's
   // commander 0.06 m).
   const bowX = rearDrive ? 0 : trHalfX + 0.32;
+  // +X is the vehicle's left. Everyone here drives from the left except the
+  // right-hand-drive Cromwell, whose hull gunner sits on the left instead.
+  const dSide = spec.shape && spec.shape.driverRight ? -1 : 1;
   const seats = {
-    driver: ['hull', V(Math.max(w * 0.24, bowX), floor + H * 0.5, len * 0.3)],
-    radio: ['hull', V(-Math.max(w * 0.26, bowX), floor + H * 0.5, len * 0.28)],
+    driver: ['hull', V(dSide * Math.max(w * 0.24, bowX), floor + H * 0.5, len * 0.3)],
+    radio: ['hull', V(-dSide * Math.max(w * 0.26, bowX), floor + H * 0.5, len * 0.28)],
     gunner: ['turret', V(t.w * 0.26, t.h * 0.42 - 0.2, -t.len * 0.02)],
     loader: ['turret', V(-t.w * 0.28, t.h * 0.4 - 0.2, t.len * 0.05)],
     commander: ['turret', V(-t.w * 0.2, t.h * 0.52 - 0.2, -t.len * 0.22)],

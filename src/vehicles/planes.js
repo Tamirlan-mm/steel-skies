@@ -35,6 +35,8 @@ export const AIR_PAINT = Object.freeze({
   AMT4: 0x565a42,                // VVS green, Il-2 upper
   AMT6: 0x2c2d2f,                // VVS black, Il-2 upper (C-01 floor)
   AMT7: 0x7f98ab,                // VVS blue-grey, Il-2 under
+  AMT11: 0x6b7c8a,               // VVS grey-blue, 1943-45 fighter upper (Yak-3)
+  AMT12: 0x4a4d50,               // VVS dark grey, 1943-45 fighter upper (Yak-3)
   US_ANA613: 0x4d4c30,           // ANA 613 olive drab, the P-51D anti-glare panel
   NMF: 0xe3e5e6,                 // natural metal, weathered aluminium (F0 Y .78)
 });
@@ -53,6 +55,8 @@ export const AIR_PAINT_BANDS = Object.freeze({
   [AP.AMT4]: { name: 'VVS AMT-4', y: [0.075, 0.11], hue: [62, 80], sat: [0.20, 0.32], rough: [0.60, 0.80] },
   [AP.AMT6]: { name: 'VVS AMT-6', y: [0.025, 0.040], hue: [0, 360], sat: [0, 0.10], rough: [0.60, 0.80] },
   [AP.AMT7]: { name: 'VVS AMT-7', y: [0.20, 0.34], hue: [195, 215], sat: [0.18, 0.35], rough: [0.60, 0.80] },
+  [AP.AMT11]: { name: 'VVS AMT-11', y: [0.15, 0.24], hue: [195, 220], sat: [0.12, 0.30], rough: [0.55, 0.75] },
+  [AP.AMT12]: { name: 'VVS AMT-12', y: [0.055, 0.09], hue: [190, 235], sat: [0, 0.12], rough: [0.55, 0.75] },
   [AP.US_ANA613]: { name: 'ANA 613 OD', y: [0.065, 0.100], hue: [50, 68], sat: [0.28, 0.42], rough: [0.55, 0.85] },
   [AP.NMF]: { name: 'Natural metal (F0)', y: [0.75, 0.92], hue: [0, 360], sat: [0, 0.05], rough: [0.25, 0.45] },
 });
@@ -483,6 +487,158 @@ export const PLANE_SPECS = {
       walkway: { x0: 0.45, x1: 1.25, dz0: -0.8, dz1: 0.6, coverage: 0.12 },
     },
   },
+  bf109g6: {
+    id: 'bf109g6', name: 'Bf 109 G-6', nation: 'Germany',
+    klass: 'Fighter', tier: 3,
+    price: { silver: 6500, rp: 2700 },
+    // Bf 109 G-6. Span 9.925, length 8.95, height 2.60 (tail down), wing area
+    // 16.05 m², gross 3148 kg, DB 605A-1 1475 PS (1085 kW), VDM 3.00 m prop.
+    // 530 km/h at sea level, ~640 at 6.6 km; ~20 m/s initial climb.
+    span: 9.925, len: 8.95,
+    // 530 km/h on the dial at sea level -> 81.5 game m/s (DISPLAY_KMH_PER_MS)
+    maxSpeed: 81.5, minSpeed: 26, accel: 10.8, hp: 40,
+    rollRate: 2.9, pitchRate: 1.5, yawRate: 0.7,
+    // --- flight model ---
+    // The smallest wing on the most power per kilo of the German pair: it
+    // climbs better than anything here and the slats let it hang at low speed,
+    // but the controls go solid fast (the roll rate is set for that).
+    engines: 1, mass: 3148, wingArea: 16.05,
+    stallSpeed: 26, structuralSpeed: 116, maxG: 8, climbRate: 16,
+    powerplant: { name: 'Daimler-Benz DB 605A-1', kw: 1085, thrust: 28500 },
+    critDensity: 0.6,
+    fuelCapacity: 250, fuelBurn: 0.36, fireRisk: 0.3,
+    // Landing flap: the 109 procedure sets 20° below 250 km/h (as quoted from
+    // the K-4 handbook; no G-6 limitations table was found). The stall-ratio
+    // floor in flapRipOf() lifts it to ~271.
+    flapLimit: 250, airbrakeCd: 0.035,
+    // G-4/G-6 handbook as quoted by owners: gear may be lowered up to 350 km/h
+    // (secondary source; the scan was not seen).
+    gearLimit: { vlo: 350, vle: 350 },
+    convergence: 300,
+    parts: {
+      leftWing: 21, rightWing: 21, tail: 16, elevator: 8, rudder: 8,
+      aileronL: 8, aileronR: 8, engine: 21, oilCooler: 7, fuelTank: 13,
+      pilot: 13, controls: 10,
+    },
+    // one MG 151/20 through the spinner (200 rds) and two MG 131 in the cowl
+    // (300 rpg): all on the centreline, so it groups tighter than wing guns
+    gun: { dmg: 4.4, rof: 11, speed: 800, ammo: 400, spread: 0.008 },
+    // one SC 250 on the ETC 500 centreline rack (R I)
+    bombs: { count: 1, radius: 36 },
+    // two 21 cm Wfr.Gr. 21 tubes, one under each wing
+    rockets: { count: 2, radius: 10 },
+    look: { engine: 'inline', wing: 'tapered', canopy: 'framed', roundTail: true },
+    // Silhouette, checked against the three-view: a low wing with a STRAIGHT
+    // trailing edge and the leading edge carrying all the taper, rounded F/G
+    // tips; a narrow deep fuselage with the cowl tapering to a big spinner;
+    // the low angular framed hood well forward; the strut-braced tailplane set
+    // high on the fin; the narrow splayed undercarriage (2.06 m track) on legs
+    // that rake out from the fuselage. G-6 tells: the Beulen over the MG 131
+    // breeches, the supercharger scoop on the PORT cowl side, the oil cooler
+    // under the nose and the two shallow radiators under the wings.
+    shape: {
+      wing: {
+        law: 'taper', rootChord: 2.00, tipChord: 1.27, leSweep: 8.5,
+        tcRoot: 0.142, tcTip: 0.114, tipRound: 0.90,
+        y: -0.38, z: 0.45, dihedral: 6.5, filletAft: 0.85,
+      },
+      fuselage: [
+        [3.88, 0.29, 0.33, -0.02, 2.4], [3.40, 0.38, 0.48, -0.05, 2.4],
+        [2.40, 0.43, 0.58, -0.02, 2.4], [1.40, 0.45, 0.62, 0.02, 2.3],
+        [0.40, 0.44, 0.62, 0.04, 2.2], [-0.80, 0.37, 0.52, 0.07, 2.1],
+        [-2.20, 0.26, 0.40, 0.10, 2.0], [-3.50, 0.15, 0.26, 0.13, 2.0],
+        [-4.35, 0.06, 0.14, 0.15, 2.0],
+      ],
+      // the low, flat-sided, heavily framed hood with the flat armoured screen
+      canopy: {
+        z: 0.50, y: 0.62, tubBack: -0.40, flatScreen: true,
+        glass: [[
+          [1.45, 0.20, 0.09, 0.67], [1.15, 0.30, 0.22, 0.64], [0.55, 0.31, 0.25, 0.63],
+          [-0.10, 0.29, 0.23, 0.62], [-0.50, 0.20, 0.13, 0.60],
+        ]],
+      },
+      prop: {
+        blades: 3, radius: 1.50, z: 3.88,
+        spinnerR: 0.26, spinnerLen: 0.55, spinnerProfile: 'ogive',
+        chordRoot: 0.26, chordTip: 0.17, hubR: 0.16,
+      },
+      // the MG 151/20 muzzle at the spinner tip
+      hubCannon: { r: 0.035, protrude: 0.08 },
+      tail: {
+        halfSpan: 1.55, rootChord: 1.05, tipChord: 0.62, law: 'taper', leSweep: 8,
+        tipRound: 0.84, tcRoot: 0.10, tcTip: 0.09, y: 0.30, z: -3.75,
+        finY: 0.16, finTop: [1.16, 0.0],
+        fin: [[0.80, 0], [-0.45, 0], [-0.43, 1.02], [0.00, 1.16], [0.45, 0.85], [0.70, 0.35]],
+        rudder: [[-0.45, -0.12], [-0.68, -0.05], [-0.73, 0.55], [-0.61, 1.02], [-0.43, 1.12]],
+        rudderHinge: -0.44,
+      },
+      // pivots on the fuselage, legs raking OUT 17° to a 2.06 m track,
+      // folding outward into the wing; fixed tailwheel
+      gear: {
+        x: 0.70, z: 1.40, legLen: 1.12, wheelR: 0.33, tyreW: 0.16,
+        retract: 'out', rake: 0.30,
+        tailZ: -3.80, tailLegLen: 0.40, tailR: 0.15, tailFixed: true,
+      },
+      wingGuns: [],
+      cowlGuns: [{ x: 0.12, y: 0.57, w: 0.09, h: 0.07, z0: 3.30, z1: 2.25 }],
+      // the Beulen, and the supercharger intake on the port (+X) flank
+      bumps: [
+        { x: 0.22, y: 0.57, z0: 2.25, z1: 1.40, w: 0.17, h: 0.09, mirror: true },
+        { x: 0.43, y: 0.08, z0: 2.55, z1: 1.85, w: 0.10, h: 0.17 },
+      ],
+      cowlLip: { w: 0.32, h: 0.15, z0: 3.20, z1: 2.10, y: -0.60 },
+      exhaust: { perSide: 6, z0: 3.30, dz: 0.21, x: 0.40, y: -0.20, size: 0.10 },
+      // two shallow coolant radiators under the inner wings, aft of the gear
+      ducts: [
+        { x: 1.55, mouth: 'square', sections: [
+          [0.40, 0.27, 0.04, -0.13], [0.15, 0.29, 0.10, -0.19],
+          [-0.55, 0.29, 0.10, -0.19], [-0.85, 0.25, 0.05, -0.14],
+        ] },
+        { x: -1.55, mouth: 'square', sections: [
+          [0.40, 0.27, 0.04, -0.13], [0.15, 0.29, 0.10, -0.19],
+          [-0.55, 0.29, 0.10, -0.19], [-0.85, 0.25, 0.05, -0.14],
+        ] },
+      ],
+      // the tailplane struts, fuselage to stabiliser underside (mirrored)
+      struts: [{ a: [0.10, -0.02, -3.62], b: [0.72, 0.26, -3.62], r: 0.022 }],
+      coolerBoxes: [
+        [1.55, -0.58, 0.30, 0.30, 0.14, 0.55], [-1.55, -0.58, 0.30, 0.30, 0.14, 0.55],
+        [0, -0.60, 2.65, 0.25, 0.16, 0.50],
+      ],
+      stores: {
+        bomb: { len: 1.64, dia: 0.37, centre: { y: -0.86, z: 0.35 } },
+        rocket: { len: 1.30, dia: 0.21, pairs: [{ x: 2.05 }] },
+      },
+    },
+    color: 0x6b7078,
+    // ---- finish: G-6, 1943-44, RLM 74/75/76 ----
+    // The same day-fighter scheme as the A-5: 74/75 on everything that faces
+    // up, 76 under and on the flanks with a soft 74/75 mottle. Balkenkreuz
+    // above and below the wings and on the fuselage; tail marking omitted
+    // (bible V-41).
+    scheme: {
+      pattern: 'splinter', upper: [AP.RLM74, AP.RLM75], lower: AP.RLM76,
+      coverage: 0.5, feature: 1.2, edge: 0.004, demarcY: 0.32, demarcSlope: 0, fade: 0.08,
+      sideMottle: { coverage: 0.35, feature: 0.14, edge: 0.16, strength: 0.55 },
+      bands: [],
+    },
+    markings: [
+      { glyph: 'de_balkenkreuz', on: 'wing', u: 0.68, face: 'upper', size: 0.85 },
+      { glyph: 'de_balkenkreuz', on: 'wing', u: 0.66, face: 'lower', size: 0.95 },
+      { glyph: 'de_balkenkreuz', on: 'fuselage', z: -1.80, y: 0.08, size: 0.72 },
+    ],
+    finish: {
+      rough: 0.62, interior: 0x4b4d4f, blade: AP.RLM70, tip: null,
+      spinner: AP.RLM70, bomb: 0x5d6152,
+    },
+    // the inverted V12 exhausts low on the cowl: a sooty streak along the
+    // lower flank to the wing root
+    weathering: {
+      exhaust: { z: 2.05, len: 2.0, y: -0.22, halfH: 0.08, droop: 0.02, soot: 0.9, strength: 0.9 },
+      oil: { z: 2.7, len: 1.6, halfW: 0.26, strength: 0.6 },
+      walkway: { x0: 0.42, x1: 1.10, dz0: -0.8, dz1: 0.6, coverage: 0.12 },
+    },
+  },
   il2: {
     id: 'il2', name: 'Il-2 Sturmovik', nation: 'USSR',
     klass: 'Attacker', tier: 3,
@@ -781,6 +937,131 @@ export const PLANE_SPECS = {
       oil: { z: 2.9, len: 1.6, halfW: 0.26, strength: 0.6 },
     },
   },
+  yak3: {
+    id: 'yak3', name: 'Yak-3', nation: 'USSR',
+    // Tier 3, not 4: one 20 mm and two 12.7 mm on a 2.7 t airframe rate with
+    // the Fw 190 and Bf 109 (battleRating.js derives 2.7), not with the P-51.
+    klass: 'Light Fighter', tier: 3,
+    price: { silver: 7000, rp: 3000 },
+    // Yak-3 (1944). Span 9.20, length 8.50, height 2.39 (tail down), wing area
+    // 14.85 m², gross 2692 kg, Klimov VK-105PF-2 ~960 kW, 3.00 m prop. ~567
+    // km/h at low level, 646 at 4.1 km; ~20 m/s initial climb; 360° in 17 s.
+    span: 9.2, len: 8.5,
+    // 560 km/h on the dial low down -> 86 game m/s
+    maxSpeed: 86, minSpeed: 25, accel: 11.2, hp: 34,
+    rollRate: 3.3, pitchRate: 1.7, yawRate: 0.78,
+    // --- flight model ---
+    // The smallest, lightest fighter of 1944: the lowest wing loading of the
+    // fast aeroplanes, so it turns and climbs with anything below 4 km, and
+    // then runs out of supercharger. Wooden wing, small tanks.
+    engines: 1, mass: 2692, wingArea: 14.85,
+    stallSpeed: 25, structuralSpeed: 104, maxG: 8, climbRate: 16,
+    powerplant: { name: 'Klimov VK-105PF-2', kw: 960, thrust: 25000 },
+    critDensity: 0.74,
+    fuelCapacity: 210, fuelBurn: 0.33, fireRisk: 0.28,
+    // Pneumatic split flaps that blow back up above ~220 km/h (no handbook
+    // table found; the stall-ratio floor in flapRipOf() lifts it to ~260).
+    flapLimit: 220, airbrakeCd: 0.035,
+    // No primary figure found: an estimate (the stall-ratio floor is ~260).
+    gearLimit: { vlo: 300, vle: 300 },
+    convergence: 300,
+    parts: {
+      leftWing: 18, rightWing: 18, tail: 14, elevator: 7, rudder: 7,
+      aileronL: 7, aileronR: 7, engine: 18, oilCooler: 6, fuelTank: 10,
+      pilot: 11, controls: 9,
+    },
+    // one ShVAK through the spinner (120 rds), two UBS in the cowl (250 rpg):
+    // 620 rounds, kept at half like the Bf 109 G-6's 800 -> 400
+    gun: { dmg: 4.2, rof: 12, speed: 800, ammo: 320, spread: 0.009 },
+    // the Yak-3 carried no bombs or rockets
+    bombs: null,
+    rockets: null,
+    look: { engine: 'inline', wing: 'tapered', canopy: 'bubble', bellyScoop: true, roundTail: true },
+    // Silhouette: a short, slim body with NO chin cooler (the Luftwaffe told
+    // its pilots exactly that), the oil coolers moved into the wing roots; a
+    // small tapered wing with rounded tips; a cut-down rear deck behind an
+    // all-round-vision hood; the coolant radiator in a ventral bath under the
+    // centre section; a small rounded fin; wide inward-folding gear.
+    shape: {
+      wing: {
+        law: 'taper', rootChord: 2.20, tipChord: 1.07, leSweep: 5.0,
+        tcRoot: 0.14, tcTip: 0.10, tipRound: 0.90,
+        y: -0.32, z: 0.30, dihedral: 6.0, filletAft: 0.95,
+      },
+      fuselage: [
+        [3.72, 0.26, 0.29, -0.02, 2.4], [3.25, 0.36, 0.42, -0.04, 2.4],
+        [2.30, 0.41, 0.50, -0.02, 2.3], [1.20, 0.42, 0.53, 0.00, 2.2],
+        [0.20, 0.42, 0.53, 0.02, 2.2], [-0.70, 0.35, 0.41, -0.02, 2.1],
+        [-2.00, 0.27, 0.32, 0.00, 2.0], [-3.30, 0.16, 0.22, 0.04, 2.0],
+        [-4.05, 0.07, 0.13, 0.07, 2.0],
+      ],
+      canopy: {
+        z: 0.20, y: 0.53, tubBack: -0.45, flatScreen: true,
+        glass: [[
+          [1.05, 0.19, 0.09, 0.57], [0.75, 0.32, 0.21, 0.55], [0.20, 0.35, 0.25, 0.53],
+          [-0.40, 0.32, 0.22, 0.51], [-0.95, 0.16, 0.08, 0.43],
+        ]],
+      },
+      prop: {
+        blades: 3, radius: 1.50, z: 3.72,
+        spinnerR: 0.22, spinnerLen: 0.50, spinnerProfile: 'ogive',
+        chordRoot: 0.25, chordTip: 0.15, hubR: 0.14,
+      },
+      hubCannon: { r: 0.032, protrude: 0.08 },
+      tail: {
+        halfSpan: 1.50, rootChord: 1.05, tipChord: 0.60, law: 'taper', leSweep: 7,
+        tipRound: 0.85, tcRoot: 0.10, tcTip: 0.09, y: 0.08, z: -3.50,
+        finY: 0.12, finTop: [1.20, 0.05],
+        fin: [[0.85, 0], [-0.45, 0], [-0.43, 1.05], [0.05, 1.20], [0.60, 0.62]],
+        rudder: [[-0.45, -0.04], [-0.72, 0.06], [-0.68, 1.00], [-0.40, 1.16]],
+        rudderHinge: -0.44,
+      },
+      gear: {
+        x: 1.25, z: 0.95, legLen: 1.02, wheelR: 0.30, tyreW: 0.18, retract: 'in',
+        tailZ: -3.65, tailLegLen: 0.38, tailR: 0.13,
+      },
+      wingGuns: [],
+      cowlGuns: [{ x: 0.13, y: 0.48, w: 0.10, h: 0.08, z0: 3.15, z1: 1.40 }],
+      exhaust: { perSide: 6, z0: 3.22, dz: 0.20, x: 0.38, y: 0.10, size: 0.09 },
+      // the ventral radiator bath under the centre section, exit flap aft
+      bellyScoop: {
+        sections: [
+          [0.90, 0.30, 0.06, -0.50], [0.50, 0.33, 0.17, -0.60],
+          [-0.40, 0.32, 0.17, -0.60], [-1.10, 0.22, 0.07, -0.52],
+        ],
+        exitDoor: { w: 0.42, h: 0.04, d: 0.28, z: -1.05, y: -0.60 },
+      },
+      // the oil-cooler intakes in the leading edge of each wing root
+      bumps: [{ x: 0.62, y: -0.36, z0: 1.50, z1: 0.90, w: 0.22, h: 0.07, mirror: true }],
+      coolerBoxes: [
+        [0, -0.62, -0.10, 0.33, 0.20, 0.65],
+        [0.62, -0.36, 1.20, 0.18, 0.10, 0.35], [-0.62, -0.36, 1.20, 0.18, 0.10, 0.35],
+      ],
+    },
+    color: 0x6f7c88,
+    // ---- finish: Yak-3, 1944, AMT-11 / AMT-12 over AMT-7 ----
+    // The 1943-44 VVS fighter scheme: grey-blue and dark grey disruptive over
+    // light blue. Red stars on the fuselage, fin and under the wings.
+    scheme: {
+      pattern: 'disruptive', upper: [AP.AMT11, AP.AMT12], lower: AP.AMT7,
+      coverage: 0.45, feature: 1.5, edge: 0.03, demarcY: -0.25, demarcSlope: -0.02, fade: 0.10,
+      bands: [],
+    },
+    markings: [
+      { glyph: 'su_star', on: 'fuselage', z: -1.90, y: 0.02, size: 0.70 },
+      { glyph: 'su_star', on: 'fin', z: 0.10, y: 0.50, size: 0.62 },
+      { glyph: 'su_star', on: 'wing', u: 0.66, face: 'lower', size: 0.95 },
+    ],
+    finish: {
+      rough: 0.62, interior: 0x707368, blade: 0x2c2d2f, tip: null,
+      spinner: AP.AMT12, bomb: 0x565a42,
+    },
+    weathering: {
+      exhaust: { z: 2.15, len: 2.1, y: 0.10, halfH: 0.07, droop: 0.012, soot: 0.4 },
+      oil: { z: 2.9, len: 1.6, halfW: 0.24, strength: 0.6 },
+      walkway: { x0: 0.42, x1: 1.10, dz0: -0.8, dz1: 0.6, coverage: 0.12 },
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1048,7 +1329,10 @@ export function buildPlaneParts(spec) {
   // round now has to pass through the radiator you can see to break it.
   const shp = spec.shape || {};
   boxes.push(pbox('engine', 0, 0, f * 0.72, 0.55, 0.5, f * 0.26));
-  if (shp.bellyScoop) {
+  if (shp.coolerBoxes) {
+    // stated per type, on the coolers the builder draws
+    for (const c of shp.coolerBoxes) boxes.push(pbox('oilCooler', c[0], c[1], c[2], c[3], c[4], c[5]));
+  } else if (shp.bellyScoop) {
     boxes.push(pbox('oilCooler', 0, -0.62, -1.6, 0.35, 0.24, 0.6));
   } else if (shp.chinDuct) {
     boxes.push(pbox('oilCooler', 0, -0.62, 3.0, 0.5, 0.3, 0.42));
@@ -2268,6 +2552,34 @@ function buildPlaneGeometry(spec) {
     }
   }
 
+  // Small fairings stated per type: the Bf 109 G-6's Beulen over the MG 131
+  // breeches and its port-side supercharger scoop, the Yak-3's wing-root oil
+  // cooler intakes. Each is a short three-section loft; `mirror` puts one a side.
+  if (shape.bumps) {
+    for (const bp of shape.bumps) {
+      const zm = bp.z0 + (bp.z1 - bp.z0) * 0.35;
+      for (const sign of bp.mirror ? [1, -1] : [1]) {
+        add(bins.body, loftZ([
+          [bp.z0, bp.w * 0.30, bp.h * 0.35, bp.y],
+          [zm, bp.w * 0.50, bp.h * 0.50, bp.y],
+          [bp.z1, bp.w * 0.32, bp.h * 0.25, bp.y],
+        ], 8).translate(sign * bp.x, 0, 0));
+      }
+    }
+  }
+  // Bracing struts (the Bf 109's tailplane struts), body frame, mirrored in X.
+  if (shape.struts) {
+    for (const sr of shape.struts) {
+      for (const sign of [1, -1]) {
+        add(bins.body, barBetween(
+          sign * sr.a[0], sr.a[1], sr.a[2],
+          sign * sr.b[0], sr.b[1], sr.b[2],
+          sr.r || 0.02, 4,
+        ));
+      }
+    }
+  }
+
   // Wingtip navigation lights, in the wing's own frame so they leave with the
   // panel when it is shot off: unlit coloured glass domes (bible V-42), red to
   // port (+X), green to starboard. The national markings are no longer
@@ -2564,6 +2876,11 @@ function buildPlaneGeometry(spec) {
   };
   add(bins.spinner, spinnerGeo(spinR, spinLen, propS.spinnerProfile || 'cone'));
   add(bins.spinner, tubeZ(spinR * 0.7, spinR * 0.7, 0.18, 12, 0, 0, -0.08));
+  // an engine-mounted cannon firing through the hub: its muzzle at the tip
+  if (shape.hubCannon) {
+    const hc = shape.hubCannon;
+    add(bins.spinner, tubeZ(hc.r, hc.r, hc.protrude + 0.06, 8, 0, 0, spinLen + hc.protrude * 0.5 - 0.03), AF_CLASS.GUN);
+  }
   for (let i = 0; i < lay.blades; i++) {
     const blade = propBlade(
       hubR, propR,
